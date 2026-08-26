@@ -6,10 +6,13 @@ class TaskController
 
     public function __construct()
     {
+        // Le controller ouvre lui-même la connexion et instancie le modèle
+        // (pas de framework, pas d'injection de dépendances ici)
         $database = new Database();
         $this->taskModel = new Task($database->getConnection());
     }
 
+    // Affiche la liste de toutes les tâches (vue : app/views/tasks/index.php)
     public function index(): void
     {
         $tasks = $this->taskModel->all();
@@ -17,11 +20,13 @@ class TaskController
         require __DIR__ . '/../views/tasks/index.php';
     }
 
+    // Affiche le formulaire de création d'une tâche (vue : app/views/tasks/create.php)
     public function create(): void
     {
         require __DIR__ . '/../views/tasks/create.php';
     }
 
+    // Traite la soumission du formulaire de création (POST) puis redirige vers la liste
     public function store(): void
     {
         $title = trim($_POST['title'] ?? '');
@@ -37,6 +42,7 @@ class TaskController
         $this->redirectToIndex();
     }
 
+    // Affiche le formulaire d'édition pré-rempli pour la tâche demandée (?id=...)
     public function edit(): void
     {
         $id = (int) ($_GET['id'] ?? 0);
@@ -50,6 +56,7 @@ class TaskController
         require __DIR__ . '/../views/tasks/edit.php';
     }
 
+    // Traite la soumission du formulaire d'édition (POST) puis redirige vers la liste
     public function update(): void
     {
         $id = (int) ($_POST['id'] ?? 0);
@@ -66,6 +73,7 @@ class TaskController
         $this->redirectToIndex();
     }
 
+    // Supprime la tâche demandée (?id=...) puis redirige vers la liste
     public function delete(): void
     {
         $id = (int) ($_GET['id'] ?? 0);
@@ -77,6 +85,7 @@ class TaskController
         $this->redirectToIndex();
     }
 
+    // Petit utilitaire commun à store(), update() et delete() : retour à la liste des tâches
     private function redirectToIndex(): void
     {
         header('Location: /taskmanager/public/index.php?controller=task&action=index');

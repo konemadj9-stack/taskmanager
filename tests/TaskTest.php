@@ -10,6 +10,8 @@ class TaskTest extends TestCase
     private PDO $db;
     private Task $task;
 
+    // Avant chaque test : connexion réelle à MySQL, puis ouverture d'une transaction.
+    // Tout ce que le test fait (create, update, delete...) restera invisible en dehors du test.
     protected function setUp(): void
     {
         $this->db = (new Database())->getConnection();
@@ -17,6 +19,8 @@ class TaskTest extends TestCase
         $this->task = new Task($this->db);
     }
 
+    // Après chaque test : on annule la transaction, donc aucune donnée de test
+    // ne reste dans la table (les vraies tâches ne sont jamais touchées).
     protected function tearDown(): void
     {
         $this->db->rollBack();
@@ -69,6 +73,8 @@ class TaskTest extends TestCase
         $this->assertContains($secondId, $ids);
     }
 
+    // Vide volontairement la table (dans la transaction du test) pour vérifier
+    // qu'all() renvoie bien un tableau vide, et pas null ou une erreur.
     public function testAllReturnsEmptyArrayWhenNoTasksExist(): void
     {
         $this->db->exec('DELETE FROM tasks');
@@ -93,6 +99,8 @@ class TaskTest extends TestCase
         $this->assertSame('done', $found['status']);
     }
 
+    // update() ne vérifie pas l'existence de l'id : la requête s'exécute sans erreur
+    // même si aucune ligne ne correspond. Ce test documente ce comportement.
     public function testUpdateOnUnknownIdChangesNothing(): void
     {
         $this->task->update(999999, [
