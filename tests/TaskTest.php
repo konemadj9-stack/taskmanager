@@ -112,6 +112,24 @@ class TaskTest extends TestCase
         $this->assertNull($this->task->find(999999));
     }
 
+    public function testUpdateStoresNullDescriptionWhenEmpty(): void
+    {
+        $id = $this->task->create([
+            'title' => 'Avec description',
+            'description' => 'Une description',
+            'status' => 'todo',
+        ]);
+
+        $this->task->update($id, [
+            'title' => 'Avec description',
+            'description' => '',
+            'status' => 'todo',
+        ]);
+
+        $found = $this->task->find($id);
+        $this->assertNull($found['description']);
+    }
+
     public function testDeleteRemovesTheTask(): void
     {
         $id = $this->task->create(['title' => 'A supprimer', 'description' => '']);
@@ -119,5 +137,17 @@ class TaskTest extends TestCase
         $this->task->delete($id);
 
         $this->assertNull($this->task->find($id));
+    }
+
+    // delete() ne vérifie pas l'existence de l'id : la requête s'exécute sans erreur
+    // même si aucune ligne ne correspond, et ne touche à aucune autre tâche.
+    public function testDeleteOnUnknownIdDoesNothing(): void
+    {
+        $id = $this->task->create(['title' => 'A conserver', 'description' => '']);
+
+        $result = $this->task->delete(999999);
+
+        $this->assertTrue($result);
+        $this->assertNotNull($this->task->find($id));
     }
 }
