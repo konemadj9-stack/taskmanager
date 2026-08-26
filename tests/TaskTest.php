@@ -93,6 +93,17 @@ class TaskTest extends TestCase
         $this->assertSame('done', $found['status']);
     }
 
+    public function testUpdateOnUnknownIdChangesNothing(): void
+    {
+        $this->task->update(999999, [
+            'title' => 'Fantome',
+            'description' => '',
+            'status' => 'done',
+        ]);
+
+        $this->assertNull($this->task->find(999999));
+    }
+
     public function testDeleteRemovesTheTask(): void
     {
         $id = $this->task->create(['title' => 'A supprimer', 'description' => '']);
