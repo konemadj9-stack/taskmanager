@@ -1,0 +1,49 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f4f4f4;
+}
+
+.container {
+    width: min(900px, 90%);
+    margin: 60px auto;
+    padding: 30px;
+    background: #fff;
+    border-radius: 8px;
+}
+
+.actions a {
+    margin-right: 10px;
+}
+
+table.tasks {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+table.tasks th,
+table.tasks td {
+    text-align: left;
+    padding: 10px;
+    border-bottom: 1px solid #ddd;
+}
+
+form input[type="text"],
+form textarea,
+form select {
+    width: 100%;
+    max-width: 400px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 1rem;
+}
+
+form button {
+    padding: 8px 16px;
+    cursor: pointer;
+}

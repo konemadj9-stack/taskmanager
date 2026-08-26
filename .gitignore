@@ -1,0 +1,6 @@
+# Dépendances téléchargées (pas de Composer sur ce projet, PHAR récupéré directement)
+phpunit.phar
+
+# Artefacts générés par PHPUnit
+.phpunit.cache/
+.phpunit.result.cache
