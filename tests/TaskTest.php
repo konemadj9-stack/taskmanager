@@ -69,6 +69,13 @@ class TaskTest extends TestCase
         $this->assertContains($secondId, $ids);
     }
 
+    public function testAllReturnsEmptyArrayWhenNoTasksExist(): void
+    {
+        $this->db->exec('DELETE FROM tasks');
+
+        $this->assertSame([], $this->task->all());
+    }
+
     public function testUpdateChangesTitleAndStatus(): void
     {
         $id = $this->task->create(['title' => 'Titre original', 'description' => '', 'status' => 'todo']);
