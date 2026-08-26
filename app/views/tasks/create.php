@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Nouvelle tâche - TaskManager</title>
-    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css">
+    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=2">
 </head>
 <body>
     <main class="container">
