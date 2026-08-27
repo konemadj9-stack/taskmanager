@@ -86,6 +86,10 @@ body {
     align-items: baseline;
     justify-content: space-between;
     margin-bottom: 24px;
+    padding: 16px 20px;
+    background: rgba(255, 255, 255, 0.85);
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
 
 .page-head h1 {
@@ -96,6 +100,57 @@ body {
 .task-count {
     color: var(--color-muted);
     font-size: 0.95rem;
+}
+
+/* Images de fond des pages (liste des taches / formulaires) */
+.bg-photo {
+    min-height: 100vh;
+    background-attachment: fixed;
+    background-position: center;
+    background-size: cover;
+    background-repeat: no-repeat;
+}
+
+.bg-photo--tasks {
+    background-image:
+        linear-gradient(rgba(241, 245, 249, 0.82), rgba(241, 245, 249, 0.82)),
+        url('https://picsum.photos/seed/taskmanager-tasks/1920/1080');
+}
+
+.bg-photo--form {
+    background-image:
+        linear-gradient(rgba(241, 245, 249, 0.55), rgba(241, 245, 249, 0.55)),
+        url('https://picsum.photos/seed/taskmanager-form/1920/1080');
+}
+
+.form-page {
+    min-height: calc(100vh - 73px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 0;
+}
+
+.form-card {
+    width: min(480px, 92%);
+    margin: 0;
+}
+
+.form-subtitle {
+    margin-top: -8px;
+    margin-bottom: 24px;
+    color: var(--color-muted);
+}
+
+.form-group {
+    margin-bottom: 18px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 600;
+    font-size: 0.9rem;
 }
 
 /* Boutons */
@@ -302,9 +357,21 @@ form textarea,
 form select {
     width: 100%;
     max-width: 400px;
-    padding: 8px;
+    padding: 10px 12px;
     font-family: inherit;
     font-size: 1rem;
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    background: #fff;
+    color: var(--color-text);
+}
+
+form input[type="text"]:focus,
+form textarea:focus,
+form select:focus {
+    outline: none;
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
 }
 
 form button {

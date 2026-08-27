@@ -3,9 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <title>Tâches - TaskManager</title>
-    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=2">
+    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=3">
 </head>
-<body>
+<body class="bg-photo bg-photo--tasks">
     <header class="topbar">
         <div class="topbar-inner">
             <a class="brand" href="/taskmanager/public/index.php">TaskManager</a>
