@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>TaskManager</title>
-    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=3">
+    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=4">
 </head>
 <body>
     <main class="hero">

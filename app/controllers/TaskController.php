@@ -85,6 +85,42 @@ class TaskController
         $this->redirectToIndex();
     }
 
+    // Exporte la liste des tâches au format CSV, compatible Excel (BOM UTF-8
+    // pour les accents, ';' comme séparateur car c'est ce qu'Excel FR attend)
+    public function exportCsv(): void
+    {
+        $tasks = $this->taskModel->all();
+
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="taches_' . date('Y-m-d') . '.csv"');
+
+        $output = fopen('php://output', 'w');
+        fwrite($output, "\xEF\xBB\xBF");
+        fputcsv($output, ['Titre', 'Description', 'Statut', 'Créée le'], ';');
+
+        foreach ($tasks as $task) {
+            fputcsv($output, [
+                $task['title'],
+                $task['description'] ?? '',
+                $task['status'] === 'done' ? 'Terminée' : 'À faire',
+                $task['created_at'],
+            ], ';');
+        }
+
+        fclose($output);
+        exit;
+    }
+
+    // Affiche une version imprimable de la liste (vue : app/views/tasks/printable.php).
+    // L'utilisateur peut choisir "Enregistrer au format PDF" dans la boîte
+    // d'impression du navigateur, ouverte automatiquement par cette vue.
+    public function printable(): void
+    {
+        $tasks = $this->taskModel->all();
+
+        require __DIR__ . '/../views/tasks/printable.php';
+    }
+
     // Petit utilitaire commun à store(), update() et delete() : retour à la liste des tâches
     private function redirectToIndex(): void
     {

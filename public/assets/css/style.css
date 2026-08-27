@@ -102,6 +102,13 @@ body {
     font-size: 0.95rem;
 }
 
+.page-head-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
 /* Images de fond des pages (liste des taches / formulaires) */
 .bg-photo {
     min-height: 100vh;

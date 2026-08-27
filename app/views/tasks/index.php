@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>Tâches - TaskManager</title>
-    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=3">
+    <link rel="stylesheet" href="/taskmanager/public/assets/css/style.css?v=4">
 </head>
 <body class="bg-photo bg-photo--tasks">
     <header class="topbar">
@@ -19,7 +19,13 @@
     <main class="page">
         <div class="page-head">
             <h1>Mes tâches</h1>
-            <span class="task-count"><?= count($tasks) ?> tâche<?= count($tasks) > 1 ? 's' : '' ?></span>
+            <div class="page-head-right">
+                <span class="task-count"><?= count($tasks) ?> tâche<?= count($tasks) > 1 ? 's' : '' ?></span>
+                <?php if (!empty($tasks)): ?>
+                    <a class="btn btn-sm btn-outline" href="/taskmanager/public/index.php?controller=task&action=exportCsv">Excel (CSV)</a>
+                    <a class="btn btn-sm btn-outline" href="/taskmanager/public/index.php?controller=task&action=printable" target="_blank">PDF</a>
+                <?php endif; ?>
+            </div>
         </div>
 
         <?php if (empty($tasks)): ?>
