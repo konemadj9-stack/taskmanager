@@ -1,0 +1,10 @@
+parameters:
+    level: 3
+    paths:
+        - app/controllers
+        - app/models
+        - config
+        - public
+    # Les vues sont de simples templates alimentes par les controllers via require ;
+    # PHPStan ne peut pas voir les variables injectees d'un fichier a l'autre,
+    # donc les analyser produit uniquement de faux positifs (variable.undefined).

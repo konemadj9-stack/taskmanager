@@ -1,5 +1,6 @@
 # Dépendances téléchargées (pas de Composer sur ce projet, PHAR récupéré directement)
 phpunit.phar
+phpstan.phar
 
 # Artefacts générés par PHPUnit
 .phpunit.cache/

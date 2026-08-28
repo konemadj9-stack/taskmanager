@@ -18,6 +18,17 @@ pipeline {
             }
         }
 
+        // Analyse statique : detecte des bugs de type/logique sans executer le code
+        // (variable non definie, mauvais type passe a une methode, etc.), avant meme
+        // de lancer les tests. Les vues sont exclues (cf. phpstan.neon) car ce sont de
+        // simples templates alimentes par les controllers, pas du code a analyser seul.
+        stage('PHPStan') {
+            steps {
+                bat 'if not exist phpstan.phar curl -L -o phpstan.phar https://github.com/phpstan/phpstan/releases/latest/download/phpstan.phar'
+                bat 'php phpstan.phar analyse -c phpstan.neon --no-progress'
+            }
+        }
+
         // DatabaseTest.php ouvre une vraie connexion PDO vers MySQL : sans ce stage,
         // un MySQL arrêté ferait échouer le build pour une mauvaise raison.
         // On démarre mysqld en arrière-plan (start /B) si besoin, puis on attend
@@ -68,7 +79,7 @@ pipeline {
         stage('Deploy local') {
             steps {
                 bat '''
-                    robocopy . "C:\\Program Files\\mes app\\xamp\\htdocs\\taskmanager" /MIR /XD .git .phpunit.cache /XF phpunit.phar
+                    robocopy . "C:\\Program Files\\mes app\\xamp\\htdocs\\taskmanager" /MIR /XD .git .phpunit.cache /XF phpunit.phar phpstan.phar
                     if %ERRORLEVEL% LEQ 7 (
                         exit /b 0
                     ) else (
