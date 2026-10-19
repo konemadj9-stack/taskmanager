@@ -2,10 +2,20 @@
 
 class Database
 {
-    private string $host = 'localhost';
-    private string $dbName = 'taskmanager';
-    private string $username = 'root';
-    private string $password = '';
+    private string $host;
+    private string $dbName;
+    private string $username;
+    private string $password;
+
+    public function __construct()
+    {
+        $this->host = getenv('DB_HOST') ?: 'localhost';
+        $this->dbName = getenv('DB_NAME') ?: 'taskmanager';
+        $this->username = getenv('DB_USER') ?: 'root';
+
+        $password = getenv('DB_PASSWORD');
+        $this->password = $password === false ? '' : $password;
+    }
 
     // Ouvre et renvoie une connexion PDO vers MySQL, prête à l'emploi
     // (mode exceptions activé, résultats renvoyés sous forme de tableaux associatifs)

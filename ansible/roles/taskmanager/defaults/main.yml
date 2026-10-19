@@ -1,0 +1,4 @@
+---
+taskmanager_app_root: /var/www/html/taskmanager
+taskmanager_db_name: taskmanager
+taskmanager_db_user: taskmanager

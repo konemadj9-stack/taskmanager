@@ -1,0 +1,113 @@
+---
+- name: Validate the prompted database password
+  ansible.builtin.assert:
+    that:
+      - taskmanager_db_password is match('^[A-Fa-f0-9]{32,}$')
+    fail_msg: "Utilisez un mot de passe hexadécimal d'au moins 32 caractères."
+  no_log: true
+
+- name: Install the web, database, and Ansible Python packages
+  ansible.builtin.apt:
+    name:
+      - apache2
+      - libapache2-mod-php
+      - mariadb-server
+      - php
+      - php-mysql
+      - python3-pymysql
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Ensure MariaDB is enabled and running
+  ansible.builtin.service:
+    name: mariadb
+    state: started
+    enabled: true
+
+- name: Create the application database
+  community.mysql.mysql_db:
+    name: "{{ taskmanager_db_name }}"
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+    login_user: root
+
+- name: Copy the SQL schema to the managed VM
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../database/schema.sql"
+    dest: /tmp/taskmanager-schema.sql
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Import the application schema
+  community.mysql.mysql_db:
+    name: "{{ taskmanager_db_name }}"
+    state: import
+    target: /tmp/taskmanager-schema.sql
+    login_unix_socket: /run/mysqld/mysqld.sock
+    login_user: root
+
+- name: Remove the temporary SQL schema
+  ansible.builtin.file:
+    path: /tmp/taskmanager-schema.sql
+    state: absent
+
+- name: Create the restricted application database user
+  community.mysql.mysql_user:
+    name: "{{ taskmanager_db_user }}"
+    host: localhost
+    password: "{{ taskmanager_db_password }}"
+    priv: "{{ taskmanager_db_name }}.*:SELECT,INSERT,UPDATE,DELETE"
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+    login_user: root
+  no_log: true
+
+- name: Create the application directory
+  ansible.builtin.file:
+    path: "{{ taskmanager_app_root }}"
+    state: directory
+    owner: root
+    group: www-data
+    mode: "0750"
+
+- name: Copy application code to Apache's document root
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../{{ item }}/"
+    dest: "{{ taskmanager_app_root }}/{{ item }}/"
+    owner: root
+    group: www-data
+    mode: preserve
+  loop:
+    - app
+    - config
+    - database
+    - public
+
+- name: Configure database environment variables for Apache
+  ansible.builtin.template:
+    src: apache-env.conf.j2
+    dest: /etc/apache2/conf-available/taskmanager-env.conf
+    owner: root
+    group: root
+    mode: "0640"
+  no_log: true
+  notify: Restart Apache
+
+- name: Enable the TaskManager Apache environment configuration
+  ansible.builtin.command: a2enconf taskmanager-env
+  args:
+    creates: /etc/apache2/conf-enabled/taskmanager-env.conf
+  notify: Restart Apache
+
+- name: Ensure Apache is enabled and running
+  ansible.builtin.service:
+    name: apache2
+    state: started
+    enabled: true
+
+- name: Apply pending service restarts
+  ansible.builtin.meta: flush_handlers

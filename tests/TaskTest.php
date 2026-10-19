@@ -19,14 +19,6 @@ class TaskTest extends TestCase
         $this->task = new Task($this->db);
     }
 
-    // TEST TEMPORAIRE : echoue volontairement pour observer le comportement du
-    // pipeline Jenkins sur un build rouge (le stage Tests doit echouer et bloquer
-    // le deploiement). A supprimer une fois la demonstration faite.
-    public function testDemonstrationEchecVolontaireDuPipeline(): void
-    {
-        $this->assertSame(1, 2, 'Echec volontaire pour tester le pipeline Jenkins.');
-    }
-
     // Après chaque test : on annule la transaction, donc aucune donnée de test
     // ne reste dans la table (les vraies tâches ne sont jamais touchées).
     protected function tearDown(): void

@@ -1,0 +1,12 @@
+---
+- name: Deploy TaskManager on the Ubuntu VM
+  hosts: taskmanager
+  become: true
+  gather_facts: true
+  vars_prompt:
+    - name: taskmanager_db_password
+      prompt: "Mot de passe MySQL dédié à TaskManager (hexadécimal recommandé)"
+      private: true
+      confirm: true
+  roles:
+    - taskmanager

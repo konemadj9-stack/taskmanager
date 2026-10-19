@@ -5,3 +5,14 @@ phpstan.phar
 # Artefacts générés par PHPUnit
 .phpunit.cache/
 .phpunit.result.cache
+
+# État et configuration locale Terraform
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/terraform.tfvars
+terraform/crash.log
+terraform/override.tf
+terraform/override.tf.json
+terraform/*_override.tf
+terraform/*_override.tf.json

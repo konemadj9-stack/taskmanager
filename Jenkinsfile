@@ -1,90 +1,67 @@
 pipeline {
     agent any
 
+    environment {
+        TF_IN_AUTOMATION = 'true'
+        DB_HOST = '127.0.0.1'
+        DB_NAME = 'taskmanager'
+    }
+
     stages {
-        // Le vrai checkout Git a déjà eu lieu automatiquement avant ce stage
-        // (le job est configuré en "Pipeline script from SCM"), donc ici on ne fait qu'un echo.
-        stage('Checkout') {
+        stage('PHP syntax') {
             steps {
-                echo 'Le code est déjà récupéré par Jenkins.'
-            }
-        }
-
-        // Vérifie que le code PHP est syntaxiquement valide avant d'aller plus loin
-        stage('PHP syntax check') {
-            steps {
-                bat 'php -v'
-                bat 'php -l public/index.php'
-            }
-        }
-
-        // Analyse statique : detecte des bugs de type/logique sans executer le code
-        // (variable non definie, mauvais type passe a une methode, etc.), avant meme
-        // de lancer les tests. Les vues sont exclues (cf. phpstan.neon) car ce sont de
-        // simples templates alimentes par les controllers, pas du code a analyser seul.
-        stage('PHPStan') {
-            steps {
-                bat 'if not exist phpstan.phar curl -L -o phpstan.phar https://github.com/phpstan/phpstan/releases/latest/download/phpstan.phar'
-                bat 'php phpstan.phar analyse -c phpstan.neon --no-progress'
-            }
-        }
-
-        // DatabaseTest.php ouvre une vraie connexion PDO vers MySQL : sans ce stage,
-        // un MySQL arrêté ferait échouer le build pour une mauvaise raison.
-        // On démarre mysqld en arrière-plan (start /B) si besoin, puis on attend
-        // qu'il réponde au ping avant de continuer.
-        stage('Check MySQL') {
-            steps {
-                bat '''
-                    set "MYSQL_BIN=C:\\Program Files\\mes app\\xamp\\mysql\\bin"
-
-                    tasklist /FI "IMAGENAME eq mysqld.exe" | find /I "mysqld.exe" >nul
-                    if errorlevel 1 (
-                        echo MySQL n'est pas demarre, demarrage en arriere-plan...
-                        start "" /B "%MYSQL_BIN%\\mysqld.exe" --defaults-file="%MYSQL_BIN%\\my.ini" --standalone
-                    ) else (
-                        echo MySQL est deja demarre.
-                    )
-
-                    set ATTEMPTS=0
-                    :waitloop
-                    "%MYSQL_BIN%\\mysqladmin.exe" --user=root ping >nul 2>&1
-                    if not errorlevel 1 goto ready
-                    set /A ATTEMPTS+=1
-                    if %ATTEMPTS% GEQ 15 (
-                        echo MySQL n'a pas repondu a temps.
-                        exit /b 1
-                    )
-                    timeout /T 2 >nul
-                    goto waitloop
-
-                    :ready
-                    echo MySQL est pret.
+                sh '''
+                    find app config public tests -type f -name '*.php' -print0 |
+                        xargs -0 -r -n1 php -l
                 '''
             }
         }
 
-        // Télécharge PHPUnit s'il n'est pas déjà présent dans le workspace, puis lance
-        // la suite de tests. Un test en échec fait échouer tout le build (build rouge).
-        stage('Tests') {
+        stage('PHPStan') {
             steps {
-                bat 'if not exist phpunit.phar curl -L -o phpunit.phar https://phar.phpunit.de/phpunit-10.phar'
-                bat 'php phpunit.phar -c phpunit.xml --testdox'
+                sh '''
+                    if [ ! -f phpstan.phar ]; then
+                        curl -fsSL https://github.com/phpstan/phpstan/releases/latest/download/phpstan.phar -o phpstan.phar
+                    fi
+                    php phpstan.phar analyse -c phpstan.neon --no-progress
+                '''
             }
         }
 
-        // Copie le projet vers le htdocs de XAMPP (chemin réel de l'installation sur
-        // cette machine, différent du C:\xampp par défaut). /MIR reflète exactement le
-        // workspace ; on exclut le repo Git et les fichiers/artefacts liés aux tests.
-        stage('Deploy local') {
+        stage('PHPUnit') {
             steps {
-                bat '''
-                    robocopy . "C:\\Program Files\\mes app\\xamp\\htdocs\\taskmanager" /MIR /XD .git .phpunit.cache /XF phpunit.phar phpstan.phar
-                    if %ERRORLEVEL% LEQ 7 (
-                        exit /b 0
-                    ) else (
-                        exit /b 1
-                    )
+                withCredentials([usernamePassword(
+                    credentialsId: 'taskmanager-ci-db',
+                    usernameVariable: 'DB_USER',
+                    passwordVariable: 'DB_PASSWORD'
+                )]) {
+                    sh '''
+                        if [ ! -f phpunit.phar ]; then
+                            curl -fsSL https://phar.phpunit.de/phpunit-10.phar -o phpunit.phar
+                        fi
+                        php phpunit.phar -c phpunit.xml --testdox
+                    '''
+                }
+            }
+        }
+
+        stage('Terraform validation') {
+            steps {
+                dir('terraform') {
+                    sh '''
+                        terraform fmt -check -recursive
+                        terraform init -backend=false -input=false
+                        terraform validate
+                    '''
+                }
+            }
+        }
+
+        stage('Ansible syntax') {
+            steps {
+                sh '''
+                    ansible-galaxy collection install -r ansible/requirements.yml
+                    ansible-playbook --syntax-check -i ansible/inventory.ini ansible/site.yml
                 '''
             }
         }

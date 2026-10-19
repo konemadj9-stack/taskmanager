@@ -1,26 +1,103 @@
 # TaskManager
 
-Petit projet PHP natif suivant une architecture MVC, prévu pour apprendre GitHub + Jenkins + CI/CD avec XAMPP.
+Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins avec une VM locale VirtualBox.
 
-## Stack
-- PHP natif, sans framework
-- HTML/CSS
-- MySQL
-- PDO
-- Apache/XAMPP
+## Fichiers d'infrastructure
 
-## Installation locale
-1. Copier le dossier `taskmanager` dans `C:\Program Files\mes app\xamp\htdocs\` (chemin réel de l'installation XAMPP sur cette machine).
-2. Créer une base MySQL nommée `taskmanager`.
-3. Importer `database/schema.sql` dans phpMyAdmin.
-4. Vérifier les identifiants dans `config/database.php`.
-5. S'assurer que MySQL et Apache sont démarrés (via le panneau de contrôle XAMPP) avant de lancer les tests ou d'ouvrir le site.
-6. Ouvrir `http://localhost/taskmanager/public/`.
+- `Jenkinsfile` : vérifie la syntaxe PHP, PHPStan, PHPUnit, Terraform et Ansible. Il ne crée ni ne modifie de VM.
+- `terraform/main.tf` : déclare une VM Ubuntu Server avec un réseau NAT et un réseau privé VirtualBox.
+- `terraform/variables.tf` : définit et valide le nom, les ressources et l'interface privée de la VM.
+- `terraform/outputs.tf` : affiche l'adresse IP privée à reporter dans Ansible.
+- `terraform/terraform.tfvars.example` : exemple de configuration locale ; sa copie `terraform.tfvars` n'est pas versionnée.
+- `ansible/inventory.ini` : indique l'hôte Ubuntu, l'utilisateur SSH et la clé de laboratoire.
+- `ansible/site.yml` : applique le rôle de déploiement sur la VM.
+- `ansible/requirements.yml` : déclare la collection Ansible nécessaire aux modules MariaDB.
+- `ansible/roles/taskmanager/defaults/main.yml` : valeurs non secrètes du rôle.
+- `ansible/roles/taskmanager/tasks/main.yml` : installe Apache/PHP/MariaDB, prépare la base et déploie l'application.
+- `ansible/roles/taskmanager/handlers/main.yml` : redémarre Apache quand sa configuration change.
+- `ansible/roles/taskmanager/templates/apache-env.conf.j2` : transmet à PHP les paramètres de connexion MySQL.
+- `config/database.php` : lit les paramètres DB depuis l'environnement tout en gardant les défauts locaux XAMPP.
+- `.gitignore` : exclut l'état Terraform et les paramètres locaux, qui ne doivent pas être partagés.
 
-## Structure
-- `app/` : MVC
-- `config/` : configuration
-- `database/` : script SQL
-- `public/` : point d'entrée web et ressources publiques
-- `tests/` : emplacement des tests
-- `Jenkinsfile` : futur pipeline Jenkins
+Le fournisseur Terraform VirtualBox choisi est expérimental et ancien. Ces fichiers sont destinés à un laboratoire local, pas à un environnement de production.
+
+## Lancer le laboratoire
+
+### 1. Préparer VirtualBox (à faire une fois)
+
+Sur Windows, installez Terraform et VirtualBox. Dans VirtualBox, créez un réseau **Host-only** avec DHCP activé. Ajoutez aussi une deuxième carte réseau Host-only à la VM Kali et sélectionnez ce même réseau. Il faudra que Kali et Ubuntu puissent communiquer sur ce réseau.
+
+### 2. Créer la VM avec Terraform (PowerShell sur Windows)
+
+Depuis la racine du dépôt :
+
+```powershell
+Copy-Item terraform\terraform.tfvars.example terraform\terraform.tfvars
+```
+
+Modifiez `terraform\terraform.tfvars` pour que `hostonly_interface` corresponde exactement au nom de l'interface Host-only affiché par VirtualBox, puis exécutez :
+
+```powershell
+Set-Location terraform
+terraform init
+terraform fmt -check
+terraform validate
+terraform plan
+terraform apply
+terraform output -raw taskmanager_ip
+```
+
+`terraform apply` crée la VM et télécharge son image. Confirmez l'opération uniquement après avoir vérifié le plan. Notez l'adresse IP affichée par la dernière commande.
+
+### 3. Configurer Ansible depuis Kali
+
+Installez Ansible, Python et Git sur Kali, puis depuis la racine du dépôt :
+
+```bash
+sudo apt update
+sudo apt install -y ansible git python3-pymysql
+ansible-galaxy collection install -r ansible/requirements.yml
+```
+
+Récupérez le dépôt dans Kali. Dans `ansible/inventory.ini`, remplacez l'adresse d'exemple par l'adresse retournée par Terraform. Le fichier utilise la clé SSH de laboratoire Vagrant. Sur Kali, récupérez-la et protégez-la ainsi :
+
+```bash
+mkdir -p ~/.ssh
+curl -fsSL https://raw.githubusercontent.com/hashicorp/vagrant/main/keys/vagrant -o ~/.ssh/vagrant_insecure_private_key
+chmod 600 ~/.ssh/vagrant_insecure_private_key
+```
+
+Cette clé privée Vagrant est connue publiquement : elle est **uniquement pour le laboratoire**.
+
+Générez un mot de passe dédié (par exemple `openssl rand -hex 24`), puis depuis la racine du dépôt, lancez :
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/site.yml
+```
+
+Le playbook demande ce mot de passe de base de données sans l'afficher. Une fois terminé, ouvrez `http://<adresse-IP>/taskmanager/public/`.
+
+### 4. Jenkins (facultatif)
+
+Le `Jenkinsfile` attend un agent Linux avec PHP 8.1+ et ses extensions, MySQL, curl, Terraform, Ansible et Git. Sur le serveur MySQL de l'agent, initialisez une base réservée aux tests :
+
+```bash
+mysql -u root -p < database/schema.sql
+```
+
+Puis créez un utilisateur qui n'a accès qu'à cette base (remplacez le mot de passe) :
+
+```sql
+CREATE USER 'taskmanager_ci'@'127.0.0.1' IDENTIFIED BY 'MOT_DE_PASSE';
+GRANT ALL PRIVILEGES ON taskmanager.* TO 'taskmanager_ci'@'127.0.0.1';
+```
+
+Ajoutez ensuite dans Jenkins un credential **Username with password** nommé `taskmanager-ci-db`, avec ce même utilisateur et mot de passe. Ne réutilisez pas la base de production.
+
+Configurez le job en **Pipeline script from SCM**. À chaque build, Jenkins valide les fichiers et exécute les tests ; la création de la VM et le déploiement restent des commandes manuelles explicites. Ne lancez pas ce Jenkinsfile sur un agent Windows : ses étapes utilisent des commandes Linux.
+
+Pour supprimer la VM de laboratoire, retournez dans `terraform/` et lancez `terraform destroy` ; cela supprime la VM et toutes les données qu'elle contient.
+
+## Configuration locale de la base
+
+`config/database.php` lit `DB_HOST`, `DB_NAME`, `DB_USER` et `DB_PASSWORD` dans l'environnement. Si ces variables ne sont pas définies, les valeurs locales XAMPP (`localhost`, `taskmanager`, `root`, mot de passe vide) sont conservées. Importez `database/schema.sql` dans MySQL avant les tests.
