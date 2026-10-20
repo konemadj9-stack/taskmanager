@@ -1,15 +1,17 @@
 =======================================================================
                          GUIDE DE LABORATOIRE
-                 TASKMANAGER - TERRAFORM, ANSIBLE ET SSH
+          TASKMANAGER - GITHUB, JENKINS, TERRAFORM ET ANSIBLE
 =======================================================================
 
 Projet       : TaskManager - application PHP/MariaDB
 Objectif     : apprendre le provisionnement et la configuration
-               d'une VM locale avec Terraform, VirtualBox et Ansible
-Environnement: Windows (hôte) + Kali Linux (poste Ansible) +
-               Ubuntu Server (serveur TaskManager)
-Date         : octobre 2026
-Statut       : application déployée et testée (HTTP 200)
+               d'une VM locale, CI/CD et déploiement automatisé
+Auteur       : KONE Ali
+Date de création de la documentation : 20/10/2026
+Environnement: Windows (hôte) + Kali Linux (Jenkins/Ansible/
+               Prometheus/Grafana) + Ubuntu Server (TaskManager)
+Statut       : pipeline Jenkins exécuté avec succès ; application
+               déployée et testée (HTTP 200) ; cibles Prometheus actives
 
 IMPORTANT - ETAT TERRAFORM AU MOMENT DE LA REDACTION
 -----------------------------------------------------------------------
@@ -37,10 +39,12 @@ SOMMAIRE
 6. SSH : rôle et fonctionnement des clés sur Kali et Ubuntu
 7. Ansible : inventaire, playbook, rôle et déploiement
 8. MariaDB : accès et commandes SQL pratiques
-9. Contrôles effectués et erreurs rencontrées
-10. Sécurité et précautions
-11. Perspectives d'amélioration
-12. Conclusion
+9. GitHub et Jenkins : CI/CD et déploiement automatisé
+10. Contrôles effectués et erreurs rencontrées
+11. Sécurité et précautions
+12. Supervision avec Prometheus et Grafana
+13. Perspectives d'amélioration
+14. Conclusion
 
 
 1. INTRODUCTION ET RESULTAT OBTENU
@@ -59,10 +63,11 @@ Résultat vérifié :
   - Depuis Kali, `curl -I http://192.168.56.102/taskmanager/public/`
     a renvoyé `HTTP/1.1 200 OK`.
 
-Jenkins est installé sur Kali. Le pipeline est configuré pour interroger
-GitHub périodiquement, vérifier le code et déployer sur Ubuntu avec
-Ansible si toutes les validations réussissent. La configuration du job
-et des credentials Jenkins reste à terminer.
+Jenkins est installé sur Kali. Le job `taskmanager-deploy` récupère le
+dépôt GitHub, exécute les validations, puis déploie sur Ubuntu avec
+Ansible lorsque toutes les validations réussissent. Le build #3 a
+réussi, y compris l'étape de déploiement. Les nouveaux commits de la
+branche `main` sont détectés périodiquement par Jenkins.
 
 
 2. ARCHITECTURE ET RESEAU DES TROIS MACHINES
@@ -71,10 +76,10 @@ et des credentials Jenkins reste à terminer.
 Machine       Rôle                         Réseau / adresse observée
 ------------- ---------------------------- --------------------------
 Windows       Hôte VirtualBox, Terraform   Host-only : 192.168.56.1
-Kali          Poste d'administration       NAT : 10.0.2.15
-                                           Host-only : 192.168.56.11
-Ubuntu        Serveur de l'application     Host-only : 192.168.56.102
-                                           NAT : 10.0.2.15
+Kali          Administration, Jenkins,     NAT : 10.0.2.15
+              Prometheus, Grafana           Host-only : 192.168.56.11
+Ubuntu        Application, MariaDB,        Host-only : 192.168.56.102
+              Node Exporter                NAT : 10.0.2.15
 
 Le réseau privé VirtualBox s'appelle :
   VirtualBox Host-Only Ethernet Adapter
@@ -125,6 +130,40 @@ d'Ubuntu (192.168.56.102). L'adresse Host-only de Kali est
 192.168.56.11. Vérifier avec `ip -br addr` après redémarrage, car les
 adresses DHCP peuvent changer.
 
+Liaison logique des trois machines et des services :
+
+  Windows (192.168.56.1)
+    |-- navigateur --> Grafana sur Kali (192.168.56.11:3000)
+    |-- navigateur --> Jenkins sur Kali (192.168.56.11:8080)
+    |-- navigateur --> TaskManager sur Ubuntu (192.168.56.102:80)
+    |
+    +---- réseau Host-only 192.168.56.0/24 -------------------------+
+                                                                  |
+  Kali (192.168.56.11) -- SSH/Ansible, TCP 22 ----------------> Ubuntu
+       |                                                          |
+       +-- Prometheus scrapes Node Exporter Kali :9100            |
+       +-- Prometheus scrapes Node Exporter Ubuntu :9100 ---------+
+       +-- Grafana interroge Prometheus sur localhost:9090
+
+Le réseau Host-only `192.168.56.0/24` est directement connecté aux
+interfaces privées des machines : il permet les échanges Windows/Kali/
+Ubuntu sans passer par Internet. La route par défaut Internet des VM
+passe par leur interface NAT VirtualBox ; l'adresse de passerelle
+effective n'a pas été relevée dans les sorties conservées et doit être
+lue avec `ip route` sur chaque VM. Les deux adresses NAT identiques
+`10.0.2.15` sont dans des réseaux NAT VirtualBox séparés, elles ne
+permettent donc pas à Kali de joindre Ubuntu. Les services et
+communications du laboratoire utilisent les adresses Host-only.
+
+Ports et sens des communications observés/configurés :
+  - Windows -> Kali TCP 3000 : interface Web Grafana.
+  - Windows -> Kali TCP 8080 : interface Web Jenkins.
+  - Windows/Kali -> Ubuntu TCP 80 : application TaskManager/Apache.
+  - Kali/Jenkins -> Ubuntu TCP 22 : SSH et déploiement Ansible.
+  - Prometheus sur Kali -> TCP 9100 de Kali et Ubuntu : collecte Node
+    Exporter. L'interface Prometheus est consultée localement sur Kali
+    au port 9090 ; Grafana utilise `http://localhost:9090`.
+
 
 3. INSTALLATION ET OUTILS PRESENTS PAR MACHINE
 -----------------------------------------------------------------------
@@ -144,10 +183,10 @@ WINDOWS (hôte VirtualBox)
 KALI (poste d'administration)
   - Ansible était déjà installé avant le déploiement.
   - Le dépôt du projet est présent sous ~/Documents/taskmanager.
-  - Commande de préparation proposée pour les outils complémentaires
-    (leur exécution n'a pas été confirmée dans le terminal partagé) :
+  - Paquets ajoutés pendant le parcours :
       sudo apt update
       sudo apt install -y ansible git python3-pymysql
+      sudo apt install -y php-cli php-curl php-mbstring php-mysql php-xml mariadb-server
   - Collection Ansible installée :
       ansible-galaxy collection install -r ansible/requirements.yml
     La version effectivement installée et affichée était
@@ -156,11 +195,22 @@ KALI (poste d'administration)
     accessible depuis Windows via http://192.168.56.11:8080.
   - Jenkins tourne sous le compte système jenkins. Terraform 1.16.6 a
     été installé dans /usr/local/bin/terraform et testé sous ce compte.
+  - MariaDB locale Kali 11.8.9 sert à la base de tests PHPUnit Jenkins.
+  - Le service Jenkins utilise `/var/lib/jenkins` comme JENKINS_HOME.
   - Clé privée SSH du laboratoire stockée dans ~/.ssh, voir section 6.
+  - Prometheus est installé comme service `prometheus`, actif et activé
+    au démarrage ; l'interface locale répond sur le port 9090.
+  - `prometheus-node-exporter` est installé et actif ; il expose les
+    métriques de Kali sur le port 9100 (`localhost:9100/metrics`).
+  - Grafana 13.2.4 est installé et actif (`grafana-server`), accessible
+    depuis Windows à `http://192.168.56.11:3000`.
 
 UBUNTU (serveur cible)
   - Image Bento Ubuntu 22.04.5 LTS, noyau observé 5.15.0-160-generic.
   - VM : taskmanager-ubuntu, 2 vCPU, 2048 MiB de mémoire.
+  - Apache/PHP/MariaDB hébergent TaskManager ; Node Exporter expose les
+    métriques système sur le port 9100.
+  - Adresse d'administration et de collecte : 192.168.56.102 (Host-only).
   - Ansible a installé : Apache2, PHP, libapache2-mod-php,
     MariaDB Server et python3-pymysql.
   - Version MariaDB observée : 10.6.23.
@@ -502,7 +552,393 @@ Saisir le mot de passe taskmanager choisi pour le playbook. Fermer le
 tunnel avec Ctrl+C dans le premier terminal.
 
 
-9. CONTROLES EFFECTUES ET ERREURS RENCONTREES
+9. GITHUB ET JENKINS : CI/CD ET DEPLOIEMENT AUTOMATISE
+-----------------------------------------------------------------------
+
+9.1. Rôle de chaque machine et flux de déploiement
+
+Windows :
+  - Héberge VirtualBox et les VM Kali/Ubuntu.
+  - Terraform Windows a servi à décrire et créer taskmanager-ubuntu.
+  - N'exécute pas le job Jenkins.
+
+Kali :
+  - Héberge Jenkins 2.580.1 et exécute le job sur le nœud principal
+    (compte système Linux `jenkins`).
+  - Contient le dépôt de travail ~/Documents/taskmanager, PHP CLI,
+    MariaDB locale de tests, Terraform Linux et Ansible.
+  - Récupère le dépôt depuis GitHub ; Ansible établit ensuite la
+    connexion SSH vers Ubuntu via Host-only.
+
+Ubuntu :
+  - Héberge l'application web, Apache/PHP et MariaDB de l'application.
+  - N'héberge ni Jenkins ni le dépôt Git de travail.
+  - Reçoit les fichiers applicatifs par Ansible/SSH après les tests.
+
+Flux à chaque changement de code :
+  développeur -> git push vers GitHub/main
+  Jenkins/Kali -> interroge GitHub, clone/actualise le workspace
+  Jenkinsfile -> syntaxe PHP -> PHPStan -> PHPUnit -> Terraform validate
+                 -> syntaxe Ansible -> déploiement Ansible sur Ubuntu
+  Ubuntu -> application mise à jour, base de données conservée
+
+Le push GitHub ne copie pas directement des fichiers sur Ubuntu.
+GitHub héberge la source ; Jenkins récupère le commit et le Jenkinsfile
+décrit les contrôles et l'étape de déploiement. L'étape Ansible copie
+app/, config/, database/ et public/ vers
+/var/www/html/taskmanager/ puis met à jour la configuration si besoin.
+Terraform n'est pas utilisé pour déployer le code et Jenkins n'exécute
+ni `terraform apply` ni `terraform destroy`.
+
+9.2. Dépôt GitHub et récupération du code
+
+  Dépôt : https://github.com/konemadj9-stack/taskmanager
+  Branche surveillée : main
+  Fichier pipeline : Jenkinsfile, à la racine du dépôt
+  URL HTTPS SCM : https://github.com/konemadj9-stack/taskmanager.git
+
+Jenkins avait initialement échoué au checkout avec :
+  Invalid username or token. Password authentication is not supported
+
+Le dépôt a ensuite été rendu public pour permettre le checkout HTTPS
+sans authentification. Dans la configuration Git SCM du job, le champ
+Credentials doit donc être `- none -`. Pour un dépôt privé, il faudrait
+au contraire fournir un credential GitHub avec un token à permissions
+minimales de lecture du dépôt. Les credentials MariaDB/SSH du pipeline
+ne servent pas à cloner GitHub.
+
+La configuration du job est `Pipeline script from SCM` :
+  - Definition : Pipeline script from SCM
+  - SCM : Git
+  - Repository URL : URL HTTPS ci-dessus
+  - Credentials : aucun pour le dépôt public
+  - Branch Specifier : */main
+  - Script Path : Jenkinsfile
+
+GitHub est aussi interrogé depuis Jenkins par polling SCM. Aucun webhook
+n'a été configuré et il n'est pas nécessaire d'exposer Jenkins à
+Internet. Les pushes sont détectés avec le déclencheur Jenkinsfile :
+  triggers {
+      pollSCM('H/2 * * * *')
+  }
+Cette expression correspond à un polling environ toutes les deux
+minutes, avec une minute répartie par Jenkins (ce n'est pas une
+garantie de déclenchement instantané). Après avoir enregistré le job,
+il a fallu lancer une première construction manuellement pour charger
+le Jenkinsfile et activer son déclencheur ; les commits suivants sont
+ensuite traités automatiquement lorsqu'ils sont détectés.
+Le Jenkinsfile ne filtre pas les chemins modifiés : un commit qui ne
+change que README.md ou la documentation déclenche aussi tout le
+pipeline et le déploiement sur Ubuntu.
+
+Le dépôt public rend le code et l'historique accessibles à tous. Ne pas
+y committer de clé privée, secret, terraform.tfstate, terraform.tfvars
+ou image VM. Le fichier terraform/vagrant.box (environ 799 MB) a été
+retiré d'un commit local non poussé puis ajouté à .gitignore après le
+rejet GitHub (limite ordinaire de fichier 100 MB). Le push corrigé a
+réussi ; le fichier de boîte est un artefact local, pas une source.
+
+9.3. Installation de Terraform pour le job Jenkins sur Kali
+
+Terraform présent sur Windows n'est pas automatiquement disponible dans
+Kali. Le Jenkinsfile vérifie aussi la configuration Terraform sur son
+agent Linux ; Terraform a donc été installé séparément sur Kali.
+Version installée et vérifiée : v1.16.6 linux_amd64.
+
+Commandes utilisées dans Kali :
+  sudo apt update
+  sudo apt install -y unzip
+  TF_VERSION=1.16.6
+  cd /tmp
+  curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+  curl -fsSLO "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_SHA256SUMS"
+  grep " terraform_${TF_VERSION}_linux_amd64.zip$" "terraform_${TF_VERSION}_SHA256SUMS" | sha256sum -c -
+  unzip -o "terraform_${TF_VERSION}_linux_amd64.zip" -d /tmp/terraform-install
+  sudo install -m 0755 /tmp/terraform-install/terraform /usr/local/bin/terraform
+  terraform version
+  sudo -u jenkins /usr/local/bin/terraform version
+  sudo -u jenkins sh -lc 'command -v terraform'
+
+La vérification SHA256 a réussi. Le binaire `/usr/local/bin/terraform`
+est accessible au compte Jenkins. `terraform init -backend=false` dans
+le pipeline télécharge son fournisseur dans le workspace Jenkins pour
+validation, mais ne crée pas la VM.
+
+9.4. Base de tests Jenkins sur Kali (distincte d'Ubuntu)
+
+PHPUnit ouvre la connexion PDO configurée par DB_HOST, DB_NAME, DB_USER
+et DB_PASSWORD. Le pipeline définit DB_HOST=127.0.0.1 et
+DB_NAME=taskmanager ; le compte `taskmanager-ci-db` fournit les
+variables DB_USER et DB_PASSWORD.
+
+La base de test locale a été initialisée à partir du même schéma SQL du
+dépôt, sur le serveur MariaDB de Kali (version 11.8.9 observée). Elle
+est indépendante de la base `taskmanager` qui héberge les tâches sur
+Ubuntu :
+  sudo apt install -y php-cli php-curl php-mbstring php-mysql php-xml mariadb-server
+  sudo systemctl enable --now mariadb
+  cd ~/Documents/taskmanager
+  sudo mariadb < database/schema.sql
+  sudo mariadb
+
+Dans l'invite MariaDB Kali, l'utilisateur dédié a été créé avec des
+droits limités à la base de test :
+  CREATE USER 'taskmanager_ci'@'127.0.0.1'
+    IDENTIFIED BY 'MOT_DE_PASSE_DE_TEST';
+  GRANT ALL PRIVILEGES ON taskmanager.*
+    TO 'taskmanager_ci'@'127.0.0.1';
+  FLUSH PRIVILEGES;
+  EXIT;
+
+Le mot de passe réel n'est pas documenté. L'accès local administrateur
+`sudo mariadb` n'a pas demandé de mot de passe parce que MariaDB utilise
+l'authentification système/socket pour root. Le compte applicatif
+`taskmanager_ci`, lui, possède son propre mot de passe.
+
+Le premier CREATE USER avait renvoyé ERROR 1396 car l'utilisateur avait
+déjà été créé lors de la commande précédente, d'abord avec un texte
+indicatif de remplacement. Le mot de passe a ensuite été changé avec :
+  ALTER USER 'taskmanager_ci'@'127.0.0.1'
+    IDENTIFIED BY 'NOUVEAU_MOT_DE_PASSE_DE_TEST';
+  FLUSH PRIVILEGES;
+
+La connexion a été testée exactement avec le compte système du job :
+  sudo -u jenkins mariadb -h 127.0.0.1 -u taskmanager_ci -p taskmanager -e "SELECT 1;"
+Résultat observé : une valeur `1`.
+
+Credential Jenkins :
+  ID       : taskmanager-ci-db
+  Type     : Username with password
+  Username : taskmanager_ci
+  Password : secret du compte de test Kali
+Importance: injecté seulement dans l'étape PHPUnit afin que les tests
+            PDO puissent se connecter à la base locale.
+
+Le test PHPUnit qui vide la table tasks doit utiliser uniquement cette
+base de test ; ne jamais faire pointer le credential vers la base
+d'Ubuntu ou une base de production.
+
+9.5. SSH et credentials de déploiement
+
+Le réseau Host-only rend Ubuntu joignable depuis Kali mais ne dispense
+pas d'authentification SSH. Ubuntu accepte pour ce laboratoire le compte
+`vagrant` et la clé privée Vagrant fournie avec l'image Bento. Cette clé
+est connue publiquement ; elle ne convient qu'au réseau de laboratoire.
+
+La clé privée utilisateur du client Kali :
+  ~/.ssh/vagrant_insecure_private_key
+Elle sert à prouver l'identité de `vagrant`. Elle n'est pas la clé
+d'hôte SSH Ubuntu. La clé publique correspondante est déjà autorisée
+dans la VM de laboratoire.
+
+La clé d'hôte ED25519 d'Ubuntu sert à Kali/Jenkins à vérifier qu'ils
+parlent bien à cette VM. Son empreinte a été comparée entre Ubuntu et
+Kali avant son installation dans le known_hosts système Jenkins.
+
+Commandes de vérification effectuées :
+  # Dans la console Ubuntu
+  sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+
+  # Dans Kali, comparer l'empreinte réseau à celle affichée par Ubuntu
+  ssh-keyscan -t ed25519 192.168.56.102 > /tmp/taskmanager-hostkey
+  ssh-keygen -lf /tmp/taskmanager-hostkey
+
+Après comparaison manuelle des empreintes :
+  sudo install -d -o jenkins -g jenkins -m 700 /var/lib/jenkins/.ssh
+  sudo install -o jenkins -g jenkins -m 600 \
+    /tmp/taskmanager-hostkey \
+    /var/lib/jenkins/.ssh/known_hosts
+  sudo -u jenkins ssh-keygen -F 192.168.56.102 \
+    -f /var/lib/jenkins/.ssh/known_hosts
+
+Le test a trouvé l'entrée de 192.168.56.102. Ne pas accepter
+automatiquement une nouvelle empreinte si l'adresse DHCP change : la
+comparer à nouveau depuis la console Ubuntu.
+
+Credentials Jenkins créés dans le domaine global System :
+
+  ID: taskmanager-ci-db
+    Type : Username with password
+    Rôle : authentification MySQL/MariaDB des tests PHPUnit sur Kali.
+
+  ID: taskmanager-ubuntu-ssh
+    Type : SSH Username with private key
+    Username : vagrant
+    Private key : contenu complet de
+      ~/.ssh/vagrant_insecure_private_key
+    Rôle : permettre au pipeline d'ouvrir SSH vers Ubuntu.
+
+  ID: taskmanager-ubuntu-db-password
+    Type : Secret text
+    Secret : mot de passe DB `taskmanager` de la VM Ubuntu
+    Rôle : permettre au rôle Ansible de définir/réconcilier l'utilisateur
+      SQL applicatif sans invite interactive.
+
+Les trois credentials sont conservés par Jenkins, pas dans Git. Ils
+doivent rester distincts : mot de passe tests Kali, clé SSH Ubuntu,
+mot de passe SQL Ubuntu. Ne jamais copier les valeurs réelles dans cette
+documentation ou la sortie console.
+
+Le Jenkinsfile lie les credentials avec :
+  withCredentials([usernamePassword(credentialsId: 'taskmanager-ci-db', ...)])
+  sshUserPrivateKey(credentialsId: 'taskmanager-ubuntu-ssh', ...)
+  string(credentialsId: 'taskmanager-ubuntu-db-password', ...)
+
+Pendant le déploiement, le shell crée un fichier JSON temporaire avec
+permissions 600 contenant l'IP cible et le mot de passe Ansible,
+désactive l'écho des commandes, puis le supprime avec un trap de sortie.
+Ansible reçoit la clé du credential via `--private-key "$SSH_KEY"` ;
+aucun fichier de clé fixe dans le workspace n'est requis.
+
+9.6. Configuration du job dans l'interface Jenkins
+
+Jenkins est joignable depuis Windows à :
+  http://192.168.56.11:8080
+Le port TCP 8080 écoute sur Kali. Ne pas le rediriger sur Internet.
+
+Après le déverrouillage initial par
+`/var/lib/jenkins/secrets/initialAdminPassword`, l'administrateur a créé
+son compte et installé les plugins suggérés. Le mot de passe initial
+n'est pas inclus dans ce guide.
+
+Credentials :
+  Administrer Jenkins
+  -> Identifiants (Credentials/Diplômes)
+  -> System
+  -> Identifiants globaux (illimité)
+  -> Add Credentials
+
+Types choisis :
+  - Nom d'utilisateur et mot de passe pour `taskmanager-ci-db`.
+  - SSH Username with private key pour `taskmanager-ubuntu-ssh`.
+  - Secret text pour `taskmanager-ubuntu-db-password`.
+
+Job créé :
+  - Nouveau Item : `taskmanager-deploy`
+  - Type : Pipeline
+  - Definition : Pipeline script from SCM
+  - SCM : Git
+  - Repository URL : https://github.com/konemadj9-stack/taskmanager.git
+  - Credentials : `- none -` parce que le dépôt a été rendu public
+  - Branch Specifier : `*/main`
+  - Script Path : `Jenkinsfile`
+
+Le premier build a été lancé manuellement avec Build Now. Après que
+Jenkins a chargé le Jenkinsfile depuis GitHub, `pollSCM` gère les
+changements suivants. Pour un dépôt privé, il faudrait sélectionner un
+credential GitHub en lecture dans le SCM ; les trois credentials de
+déploiement ci-dessus ne remplacent pas l'identifiant de checkout.
+
+9.7. Déroulement détaillé du Jenkinsfile
+
+  pipeline { agent any }
+    Exécute sur le nœud Jenkins principal de Kali. C'est pratique pour
+    ce labo ; pour un vrai serveur, un agent distinct est préférable.
+
+  triggers { pollSCM('H/2 * * * *') }
+    Interroge périodiquement le SCM GitHub pour détecter les nouveaux
+    commits. Les commits détectés sur la branche configurée déclenchent
+    le job sans clic Build Now. Cela n'est pas un webhook et peut avoir
+    jusqu'à environ deux minutes de délai.
+
+  environment
+    TF_IN_AUTOMATION=true évite les interactions Terraform.
+    DB_HOST=127.0.0.1 et DB_NAME=taskmanager ciblent la base tests Kali.
+    TASKMANAGER_HOST=192.168.56.102 est l'adresse Host-only Ubuntu
+    actuellement observée ; actualiser si DHCP la change.
+
+Stages exécutés dans l'ordre :
+
+  1. PHP syntax
+     `find ... -name '*.php'` passe chaque fichier PHP à `php -l`.
+     Une erreur de syntaxe arrête le pipeline.
+
+  2. PHPStan
+     Télécharge phpstan.phar s'il manque, puis analyse avec phpstan.neon.
+     Une erreur statique arrête les étapes suivantes.
+
+  3. PHPUnit
+     Injecte le credential taskmanager-ci-db sous DB_USER/DB_PASSWORD,
+     télécharge phpunit.phar s'il manque, lance les tests sur la DB Kali.
+     Les identifiants sont masqués par Jenkins autant que possible.
+
+  4. Terraform validation
+     `terraform fmt -check -recursive` vérifie le format ;
+     `terraform init -backend=false -input=false` initialise les
+     fournisseurs sans backend distant ;
+     `terraform validate` vérifie la configuration.
+     Aucun `plan`, `apply` ou `destroy` n'est lancé.
+
+  5. Ansible syntax
+     Installe les collections déclarées dans ansible/requirements.yml
+     pour le compte Jenkins, puis exécute --syntax-check sur site.yml.
+
+  6. Deploy to Ubuntu
+     N'est exécuté que si les cinq stages précédents réussissent.
+     Lie la clé SSH et le secret de DB Ubuntu depuis Credentials.
+     Lance `ansible-playbook -i ansible/inventory.ini ansible/site.yml`
+     avec la clé temporaire du credential et les extra-vars.
+     Le playbook installe/actualise l'application et redémarre Apache
+     seulement si la configuration change.
+
+La synchronisation applicative n'efface pas la VM ni sa base. Le rôle
+ne copie que app/, config/, database/ et public/. Les données SQL sont
+gérées dans MariaDB sur Ubuntu, séparément des fichiers GitHub.
+
+9.8. Premier échec SSH puis correction et succès
+
+Build initial :
+  Checkout SCM, PHP syntax, PHPStan, PHPUnit, validation Terraform et
+  syntaxe Ansible ont réussi. Le déploiement Ansible a échoué avec :
+    no such identity: /var/lib/jenkins/.ssh/vagrant_insecure_private_key
+    Permission denied (publickey,password).
+
+Cause :
+  ansible/inventory.ini contenait alors
+  `ansible_ssh_private_key_file=~/.ssh/vagrant_insecure_private_key`.
+  Dans le contexte Jenkins, ~ désignait /var/lib/jenkins ; la clé
+  n'existait pas à ce chemin. Cette variable d'inventaire prenait
+  priorité sur la clé temporaire du credential passée par Jenkins.
+
+Correction :
+  supprimer ansible_ssh_private_key_file de l'inventaire versionné ;
+  garder `ansible_host` et `ansible_user` dans inventory.ini ;
+  fournir la clé Jenkins uniquement par `--private-key`.
+  Le groupe de l'inventaire s'appelle maintenant `web`, distinct du
+  nom d'hôte `taskmanager`, et site.yml cible `hosts: web`.
+  Les commandes Ansible manuelles depuis Kali doivent ajouter :
+    --private-key ~/.ssh/vagrant_insecure_private_key
+
+La correction a été poussée sur GitHub/main. Le build #3 a ensuite
+terminé en succès en environ 1 minute 3 secondes ; toutes les étapes,
+y compris Deploy to Ubuntu, étaient vertes.
+
+Des messages de dépréciation community.mysql.mysql_db/mysql_user ont
+été affichés. Ils n'étaient pas l'origine de l'échec SSH et n'ont pas
+empêché le build réussi. Il faudra migrer ces modules à terme.
+
+9.9. Vérifier le déploiement et le polling
+
+Après un build réussi :
+  Depuis Kali :
+    curl -I http://192.168.56.102/taskmanager/public/
+  Attendu :
+    HTTP/1.1 200 OK
+
+Faire un changement applicatif, commit et push sur main. Après détection
+par pollSCM, vérifier dans Jenkins l'historique des builds et Console
+Output. Le nouveau build doit indiquer son commit SCM, passer les tests,
+puis afficher le stage Deploy to Ubuntu en succès.
+
+L'avertissement de Jenkins indiquant que /var/lib/jenkins était presque
+plein a été observé. Le build a néanmoins réussi, mais surveiller
+l'espace avant les prochains builds :
+  df -h /var/lib/jenkins
+  sudo du -sh /var/lib/jenkins/* 2>/dev/null | sort -h | tail
+Ne pas effacer manuellement le workspace ou JENKINS_HOME sans vérifier
+ce qui peut être supprimé.
+
+10. CONTROLES EFFECTUES ET ERREURS RENCONTREES
 -----------------------------------------------------------------------
 
 Terraform :
@@ -541,7 +977,8 @@ Erreur du premier déploiement Jenkins :
     valeur ansible_ssh_private_key_file dans l'inventaire avait priorité
     et contredisait cette option.
   - Correction : enlever ansible_ssh_private_key_file de inventory.ini.
-    Jenkins doit lire la nouvelle version depuis Git avant de relancer.
+    Après le push de cette correction, le build suivant a pu utiliser la
+    clé fournie par le credential Jenkins.
   - Les avertissements community.mysql sont des dépréciations, pas la
     cause de l'échec SSH.
 
@@ -563,58 +1000,14 @@ Jenkins :
     Kali ; le job Jenkins installe ses propres collections sous le compte
     jenkins lors du build.
 
-Configuration Jenkins à terminer :
-  1. Préparer sur Kali une base taskmanager réservée aux tests PHPUnit,
-     distincte de la base taskmanager sur Ubuntu :
-       sudo apt install -y php-cli php-curl php-mbstring php-mysql php-xml mariadb-server
-       sudo systemctl enable --now mariadb
-       sudo mariadb < database/schema.sql
-     Dans `sudo mariadb`, créer un utilisateur local avec des droits
-     limités à cette seule base :
-       CREATE USER 'taskmanager_ci'@'127.0.0.1'
-         IDENTIFIED BY 'MOT_DE_PASSE_HEXADECIMAL';
-       GRANT ALL PRIVILEGES ON taskmanager.*
-         TO 'taskmanager_ci'@'127.0.0.1';
-       FLUSH PRIVILEGES;
-  2. Dans Jenkins > Manage Jenkins > Credentials, créer :
-       taskmanager-ci-db
-         Username with password : taskmanager_ci + mot de passe de test.
-       taskmanager-ubuntu-ssh
-         SSH Username with private key : username vagrant + clé privée
-         de laboratoire. La clé Vagrant est publiquement connue, labo
-         seulement.
-       taskmanager-ubuntu-db-password
-         Secret text : mot de passe SQL exact saisi au premier playbook.
-     Ne pas mettre ces valeurs dans le dépôt Git.
-  3. Le compte jenkins doit accéder à la base MariaDB locale et pouvoir
-     joindre Ubuntu sur le réseau Host-only 192.168.56.102.
-  4. Vérifier l'empreinte ED25519 d'Ubuntu depuis sa console :
-       sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-     Puis depuis Kali :
-       ssh-keyscan -t ed25519 192.168.56.102 > /tmp/taskmanager-hostkey
-       ssh-keygen -lf /tmp/taskmanager-hostkey
-     Comparer les empreintes. Si elles correspondent, ajouter l'entrée
-     au known_hosts du compte Jenkins :
-       sudo install -d -o jenkins -g jenkins -m 700 /var/lib/jenkins/.ssh
-       sudo sh -c 'ssh-keyscan -H -t ed25519 192.168.56.102 >> /var/lib/jenkins/.ssh/known_hosts'
-       sudo chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
-       sudo chmod 600 /var/lib/jenkins/.ssh/known_hosts
-  5. Dans Jenkins, créer un item Pipeline avec Pipeline script from SCM,
-     Git, URL du dépôt, branche voulue, Script Path `Jenkinsfile`.
-     Lancer d'abord un build manuel. `pollSCM('H/2 * * * *')` interroge
-     GitHub environ toutes les deux minutes et déclenche les builds des
-     nouveaux commits détectés ; aucun webhook public n'est nécessaire.
-
-Le Jenkinsfile exécute PHP syntax, PHPStan, PHPUnit, Terraform fmt/init/
-validate et la syntaxe Ansible. Ensuite, il injecte le secret de base
-Ubuntu dans un fichier temporaire à permissions 600, lance le playbook
-et supprime ce fichier à la fin. La clé SSH et les mots de passe sont
-obtenus depuis les credentials Jenkins. Il ne lance pas `terraform
-apply` ni `terraform destroy`. TASKMANAGER_HOST vaut actuellement
-192.168.56.102 ; mettre cette variable à jour si DHCP modifie l'adresse.
+  - Le premier checkout Git a échoué car GitHub refusait les identifiants
+    HTTPS configurés. Le dépôt a été rendu public et le credential SCM
+    réglé sur aucun ; le checkout suivant a réussi.
+  - Un avertissement signalait que JENKINS_HOME (/var/lib/jenkins)
+    était presque plein. Le build a réussi, mais surveiller l'espace.
 
 
-10. SECURITE ET PRECAUTIONS
+11. SECURITE ET PRECAUTIONS
 -----------------------------------------------------------------------
 
   - La clé privée Vagrant est connue publiquement : laboratoire isolé
@@ -633,8 +1026,258 @@ apply` ni `terraform destroy`. TASKMANAGER_HOST vaut actuellement
     pas une architecture de production.
 
 
-11. PERSPECTIVES D'AMELIORATION
+12. SUPERVISION AVEC PROMETHEUS ET GRAFANA
 -----------------------------------------------------------------------
+
+12.1. Architecture et rôle des composants
+.......................................................................
+
+La supervision est indépendante du pipeline Jenkins :
+
+  Windows (navigateur)
+      | HTTP Host-only :3000
+      v
+  Kali : Grafana 13.2.4
+      | datasource Prometheus : http://localhost:9090
+      v
+  Kali : Prometheus
+      | collecte périodique HTTP /metrics sur TCP 9100
+      +---------------------------> Node Exporter Kali
+      +---------------------------> Node Exporter Ubuntu
+                                      192.168.56.102:9100
+
+  Ubuntu : Apache/PHP/MariaDB + TaskManager
+
+Node Exporter expose un endpoint texte `/metrics` ; il ne pousse pas
+les données et ne les conserve pas. Prometheus interroge cet endpoint
+selon son `scrape_interval`, puis stocke les séries temporelles sur Kali.
+Grafana interroge Prometheus et présente les résultats sous forme de
+graphiques. Le navigateur Windows ne collecte ni ne stocke les métriques.
+
+Les métriques système couvrent notamment CPU, mémoire, systèmes de
+fichiers, réseau et disponibilité des cibles. L'installation réalisée
+ne mesure pas directement les requêtes HTTP Apache, les temps de réponse
+TaskManager ni les requêtes MariaDB ; des exporters ou sondes dédiés
+seraient nécessaires pour ces mesures applicatives.
+
+12.2. Installation et activation de Prometheus sur Kali
+.......................................................................
+
+Prometheus a été installé depuis les dépôts Kali et le service, initialement
+inactif, a été activé :
+
+  sudo apt update
+  sudo apt install prometheus
+  sudo systemctl enable --now prometheus
+  systemctl status prometheus --no-pager
+  curl -fsS http://localhost:9090/-/ready
+
+Résultat : le service est `active (running)` et `/-/ready` renvoie
+`Prometheus Server is Ready.` La requête `curl -I` avait retourné HTTP
+405 parce qu'elle envoyait une méthode HEAD ; l'endpoint accepte GET,
+utilisé dans la commande de contrôle ci-dessus.
+
+12.3. Installation de Node Exporter sur Ubuntu depuis Kali
+.......................................................................
+
+La clé SSH du laboratoire reste sur Kali. La connexion et les commandes
+ont été exécutées ainsi :
+
+  chmod 600 ~/.ssh/vagrant_insecure_private_key
+  ssh -i ~/.ssh/vagrant_insecure_private_key \
+    vagrant@192.168.56.102
+
+Dans la session ouverte sur Ubuntu :
+
+  sudo apt update
+  sudo apt install prometheus-node-exporter
+  sudo systemctl enable --now prometheus-node-exporter
+  systemctl status prometheus-node-exporter --no-pager
+
+Après fermeture de la session (`exit`), Kali a pu lire l'endpoint :
+
+  curl http://192.168.56.102:9100/metrics
+
+Le résultat comprenait, entre autres, `apt_upgrades_pending` et des
+métriques internes du processus Go (`go_goroutines`, `go_memstats_*`).
+Les lignes `# HELP` décrivent les métriques, `# TYPE` indique leur type,
+et les lignes suivantes donnent les valeurs et leurs labels. La
+commande `curl ... | head` a affiché un avertissement curl 23 parce que
+`head` ferme le flux après ses premières lignes ; cela ne signifie pas
+que Node Exporter est en panne.
+
+12.4. Installation de Node Exporter sur Kali
+.......................................................................
+
+Le paquet `prometheus-node-exporter` avait aussi été installé sur Kali.
+Le job local existait dans la configuration Prometheus, mais était
+initialement `down` car le service n'était pas démarré. Il a été activé :
+
+  sudo systemctl enable --now prometheus-node-exporter
+  systemctl status prometheus-node-exporter --no-pager
+  curl -fsS http://localhost:9100/metrics | head
+
+Le service est devenu `active (running)` ; la réponse de `/metrics`
+confirme que l'exporter local fonctionne.
+
+12.5. Configuration de la cible Ubuntu dans Prometheus
+.......................................................................
+
+Le fichier `/etc/prometheus/prometheus.yml` contenait déjà les jobs
+`prometheus` (localhost:9090) et `node` (localhost:9100). Une sauvegarde
+a été faite avant édition :
+
+  sudo cp /etc/prometheus/prometheus.yml \
+    /etc/prometheus/prometheus.yml.bak
+  sudo nano /etc/prometheus/prometheus.yml
+
+Le job Ubuntu ajouté à `scrape_configs` est :
+
+  - job_name: 'ubuntu'
+    static_configs:
+      - targets: ['192.168.56.102:9100']
+
+Validation et redémarrage :
+
+  sudo promtool check config /etc/prometheus/prometheus.yml
+  sudo systemctl restart prometheus
+  systemctl status prometheus --no-pager
+
+`promtool` a répondu `SUCCESS: ... is valid prometheus config file
+syntax`. La cible Ubuntu est ensuite apparue `up`.
+
+Pour lire l'état de toutes les cibles depuis Kali :
+
+  curl -fsS http://localhost:9090/api/v1/targets |
+  python3 -c 'import json,sys; d=json.load(sys.stdin); [print(
+  "job={} état={} cible={} erreur={}".format(t["labels"].get("job"),
+  t["health"], t["scrapeUrl"], t["lastError"]))
+  for t in d["data"]["activeTargets"]]'
+
+Résultat confirmé au contrôle :
+
+  job=node       état=up cible=http://localhost:9100/metrics
+  job=prometheus état=up cible=http://localhost:9090/metrics
+  job=ubuntu     état=up cible=http://192.168.56.102:9100/metrics
+
+12.6. Installation et démarrage de Grafana sur Kali
+.......................................................................
+
+Le paquet Grafana n'était pas dans les dépôts Kali configurés. Le dépôt
+officiel APT a été ajouté avec une clé de signature dédiée, puis le
+paquet installé :
+
+  sudo apt install -y wget gpg
+  sudo install -d -m 0755 /etc/apt/keyrings
+  wget -qO- https://apt.grafana.com/gpg.key | \
+    gpg --dearmor | sudo tee /etc/apt/keyrings/grafana.gpg >/dev/null
+  sudo chmod 644 /etc/apt/keyrings/grafana.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] \
+    https://apt.grafana.com stable main" | \
+    sudo tee /etc/apt/sources.list.d/grafana.list
+  sudo apt update
+  sudo apt install grafana
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now grafana-server
+  systemctl status grafana-server --no-pager
+
+La version installée rapportée par l'API est 13.2.4. L'installation a
+téléchargé environ 381 Mo et estimé 1 377 Mo d'espace nécessaire. Le
+service n'a pas été démarré automatiquement par le paquet ; `enable
+--now` l'a démarré et activé au démarrage. Le contrôle suivant a réussi :
+
+  curl -fsS http://192.168.56.11:3000/api/health
+
+Résultat :
+
+  database: ok
+  version: 13.2.4
+
+L'interface a été ouverte depuis Windows à :
+  http://192.168.56.11:3000
+
+La page de connexion initiale a demandé les identifiants Grafana. Après
+connexion, Grafana affichait son accueil sans tableau de bord, ce qui est
+normal avant d'en créer un. L'accès HTTP du labo n'est pas chiffré ; ne
+pas exposer le port 3000 à Internet. Vérifier dans
+`/etc/grafana/grafana.ini` la valeur effective de `http_addr` et la
+configuration réseau avant tout usage hors du Host-only.
+
+12.7. Déclaration de Prometheus comme source Grafana
+.......................................................................
+
+Dans Grafana, la source a été ajoutée par **Connections > Data sources >
+Add data source > Prometheus**. Configuration utilisée :
+
+  Prometheus server URL : http://localhost:9090
+  Authentication method : No Authentication
+  HTTP method           : POST (valeur par défaut)
+
+`localhost` désigne Kali dans ce contexte, puisque Grafana et Prometheus
+tournent sur la même VM ; il ne faut pas saisir l'adresse `localhost`
+de Windows. Le bouton **Save & test** a affiché :
+
+  Successfully queried the Prometheus API.
+
+Le fait de sauvegarder la source ne crée pas automatiquement de
+dashboard ; les requêtes se font ensuite dans **Explore** ou dans un
+dashboard.
+
+12.8. Vérification des données et requête CPU
+.......................................................................
+
+Dans **Explore**, source `prometheus`, mode **Code**, la requête PromQL :
+
+  up
+
+a retourné trois séries avec la valeur `1` :
+
+  up{instance="localhost:9090", job="prometheus"} 1
+  up{instance="localhost:9100", job="node"} 1
+  up{instance="192.168.56.102:9100", job="ubuntu"} 1
+
+La valeur 1 signifie que la dernière collecte de la cible a réussi ; 0
+signale une cible indisponible lors de la collecte. Le graphique conserve
+l'historique de la période affichée, ainsi une ancienne chute à 0 peut
+coexister avec une valeur courante à 1. Des valeurs courantes à 1 ont
+été confirmées pour les trois cibles.
+
+Pourcentage estimé de CPU non-idle par instance, moyenne sur les cœurs,
+sur une fenêtre de cinq minutes :
+
+  100 * (1 - avg by (instance) (
+    rate(node_cpu_seconds_total{mode="idle"}[5m])
+  ))
+
+Au moment de la capture, le tableau de résultats affichait environ :
+  - Ubuntu (192.168.56.102:9100) : 1,83 %.
+  - Kali (localhost:9100) : 12,74 %.
+
+Ce sont des mesures instantanées de ce laboratoire, susceptibles de
+varier selon les processus actifs. Un pic antérieur autour de 90 % a
+baissé après l'installation et le lancement des services ; il ne s'agit
+pas d'un seuil d'alerte configuré.
+
+12.9. Espace disque et exploitation
+.......................................................................
+
+Après installation de Grafana, `df -h /` a indiqué un disque de 29 Go,
+26 Go utilisés et 1,5 Go disponibles (95 %). L'espace disponible doit
+être surveillé, notamment pour Prometheus qui conserve ses séries
+temporelles sur Kali. Vérification :
+
+  df -h /
+  sudo du -sh /var/lib/prometheus /var/lib/grafana 2>/dev/null
+
+Ne pas lancer `apt autoremove` sans examiner d'abord la simulation et
+la liste des paquets ; Kali proposait des dépendances de plusieurs outils
+de sécurité. Avant une collecte prolongée, définir une rétention limitée
+pour Prometheus et contrôler les données. Les ports 3000, 9090 et 9100
+doivent rester privés au laboratoire ; ne pas configurer de redirection
+de ports vers Internet.
+
+
+13. PERSPECTIVES D'AMELIORATION
 
   1. Réparer la relation Terraform/VM marquée tainted sans perdre les
      données, puis choisir un fournisseur VirtualBox maintenu ou une
@@ -647,13 +1290,13 @@ apply` ni `terraform destroy`. TASKMANAGER_HOST vaut actuellement
      adresse codée en dur.
   4. Séparer noms de groupe et d'hôte Ansible et corriger les modules
      community.mysql dépréciés.
-  5. Remplacer la clé Vagrant publique par une clé Ed25519 personnelle ;
-     stocker les secrets Ansible dans Ansible Vault ou un gestionnaire
-     de secrets.
+  5. Stocker les secrets Ansible dans Ansible Vault ou un gestionnaire
+     de secrets et retirer la clé Vagrant publique du laboratoire.
   6. Protéger les secrets Apache et l'accès MariaDB, et contrôler les
      permissions de la configuration générée.
-  7. Terminer le job Jenkins et préparer les trois credentials indiqués
-     dans la section 9 ; remplacer la clé Vagrant dès que possible.
+  7. Utiliser un agent Jenkins isolé plutôt que le contrôleur pour
+     exécuter les builds, définir une politique de rétention et libérer
+     l'espace disque sans supprimer JENKINS_HOME à l'aveugle.
   8. Ajouter une sauvegarde/restauration MariaDB et une procédure de
      retour arrière du déploiement.
   9. Versionner terraform/.terraform.lock.hcl, mais jamais state,
@@ -661,13 +1304,16 @@ apply` ni `terraform destroy`. TASKMANAGER_HOST vaut actuellement
  10. Envisager un DNS local plutôt que de dépendre directement d'une IP.
 
 
-12. CONCLUSION
+14. CONCLUSION
 -----------------------------------------------------------------------
 
 Le laboratoire a permis de créer une VM Ubuntu VirtualBox, de la rendre
 accessible depuis Kali par SSH, de configurer son réseau NAT/Host-only,
 puis de déployer TaskManager avec Ansible. La réponse HTTP 200 et l'accès
-MariaDB confirment que l'application fonctionne.
+MariaDB confirment que l'application fonctionne. Jenkins valide et
+redéploie l'application ; Prometheus collecte maintenant les métriques
+de Kali et Ubuntu, et Grafana interroge Prometheus avec un test de source
+de données réussi.
 
 La principale limite restante est la gestion Terraform : le fournisseur
 a créé la VM mais a échoué en lisant les propriétés réseau de l'invité,

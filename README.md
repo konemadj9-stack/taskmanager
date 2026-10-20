@@ -1,6 +1,79 @@
 # TaskManager
 
-Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins avec une VM locale VirtualBox.
+Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins avec une VM locale VirtualBox, puis Prometheus et Grafana pour la supervision.
+
+## Architecture du laboratoire
+
+```text
+Windows (hôte VirtualBox, Terraform, navigateur)
+   | Host-only 192.168.56.1/24
+   +------------------ Kali 192.168.56.11
+   |                    Jenkins :8080
+   |                    Prometheus :9090
+   |                    Grafana :3000
+   |                    Node Exporter :9100
+   |                         |
+   |                         | scrapes Prometheus vers :9100
+   +-------------------------+ Ubuntu 192.168.56.102
+                              TaskManager (Apache/PHP/MariaDB)
+                              Node Exporter :9100
+```
+
+- **Windows** héberge VirtualBox et Terraform, et sert de poste navigateur. Son adresse Host-only observée est `192.168.56.1`.
+- **Kali** est le poste d'administration : Ansible se connecte en SSH à Ubuntu, Jenkins valide et déploie l'application, Prometheus collecte les métriques et Grafana les affiche. Adresse Host-only observée : `192.168.56.11`.
+- **Ubuntu** héberge l'application et sa base MariaDB ; Ansible et Jenkins l'administrent à distance. Node Exporter y expose les métriques. Adresse Host-only observée : `192.168.56.102`.
+
+Les trois machines communiquent sur le réseau Host-only `192.168.56.0/24`. Kali et Ubuntu possèdent aussi une interface NAT VirtualBox ; l'adresse `10.0.2.15` observée sur chacune appartient à leurs réseaux NAT respectifs et ne doit pas servir à joindre l'une depuis l'autre. Le réseau Host-only sert aux communications du labo ; la sortie Internet des VM passe par NAT. Les routes et interfaces courantes se vérifient avec `ip -br addr` et `ip route`.
+
+Flux principaux : Windows ouvre l'application sur `http://192.168.56.102/taskmanager/public/`, Jenkins sur `http://192.168.56.11:8080` et Grafana sur `http://192.168.56.11:3000`. Jenkins se connecte à Ubuntu en SSH (TCP 22) pour le déploiement Ansible. Prometheus sur Kali scrute Node Exporter sur Kali (`localhost:9100`) et Ubuntu (`192.168.56.102:9100`). Grafana interroge Prometheus localement à `http://localhost:9090`. Node Exporter expose les métriques sur TCP 9100 ; ne pas publier ce port sur Internet.
+
+## Supervision avec Prometheus et Grafana
+
+Prometheus et Grafana sont installés sur Kali ; Node Exporter tourne sur Kali et Ubuntu. Prometheus collecte notamment l'état des cibles, le CPU, la mémoire et les systèmes de fichiers. Grafana utilise Prometheus comme source de données pour les requêtes et les tableaux de bord. Jenkins continue indépendamment son travail de CI/CD.
+
+Installation/démarrage (paquets et dépôt Grafana déjà configurés dans le labo) :
+
+```bash
+# Kali
+sudo apt install prometheus prometheus-node-exporter
+sudo systemctl enable --now prometheus prometheus-node-exporter
+
+# Depuis Kali, connexion à Ubuntu avec la clé de laboratoire
+ssh -i ~/.ssh/vagrant_insecure_private_key vagrant@192.168.56.102
+# Dans la session Ubuntu
+sudo apt update
+sudo apt install prometheus-node-exporter
+sudo systemctl enable --now prometheus-node-exporter
+exit
+```
+
+La configuration `/etc/prometheus/prometheus.yml` conserve les jobs de Prometheus et de Node Exporter local, et ajoute la cible Ubuntu :
+
+```yaml
+  - job_name: ubuntu
+    static_configs:
+      - targets: ['192.168.56.102:9100']
+```
+
+Après modification, vérifier puis recharger Prometheus :
+
+```bash
+sudo promtool check config /etc/prometheus/prometheus.yml
+sudo systemctl restart prometheus
+curl -fsS http://localhost:9090/-/ready
+curl -fsS http://192.168.56.102:9100/metrics
+curl -fsS http://localhost:9090/api/v1/targets
+```
+
+Grafana est accessible depuis Windows sur `http://192.168.56.11:3000`. Dans **Connections → Data sources**, la source Prometheus utilise `http://localhost:9090` (Grafana et Prometheus sont sur Kali). Le test **Save & test** a confirmé : « Successfully queried the Prometheus API ». Dans **Explore**, la requête `up` a retourné `1` pour les trois cibles `prometheus`, `node` (Kali) et `ubuntu`.
+
+Exemple de requête PromQL pour le pourcentage de CPU occupé par machine :
+
+```promql
+100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])))
+```
+
+Lors du contrôle du 20/10/2026, cette requête affichait environ 1,83 % pour Ubuntu et 12,74 % pour Kali ; ce sont des mesures ponctuelles, pas des seuils ni des performances garanties. Prometheus était prêt (`/-/ready`) et l'API de santé Grafana indiquait la version 13.2.4. Après l'installation de Grafana, il restait environ 1,5 Gio sur la partition Kali : surveiller `df -h /` et limiter la rétention Prometheus avant un usage prolongé.
 
 ## Fichiers d'infrastructure
 
@@ -9,7 +82,7 @@ Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins ave
 - `terraform/variables.tf` : définit et valide le nom, les ressources et l'interface privée de la VM.
 - `terraform/outputs.tf` : affiche l'adresse IP privée à reporter dans Ansible.
 - `terraform/terraform.tfvars.example` : exemple de configuration locale ; sa copie `terraform.tfvars` n'est pas versionnée.
-- `ansible/inventory.ini` : indique l'hôte Ubuntu, l'utilisateur SSH et la clé de laboratoire.
+- `ansible/inventory.ini` : indique l'hôte Ubuntu et l'utilisateur SSH ; la clé est fournie séparément à Ansible ou par le credential Jenkins.
 - `ansible/site.yml` : applique le rôle de déploiement sur la VM.
 - `ansible/requirements.yml` : déclare la collection Ansible nécessaire aux modules MariaDB.
 - `ansible/roles/taskmanager/defaults/main.yml` : valeurs non secrètes du rôle.
@@ -20,6 +93,8 @@ Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins ave
 - `.gitignore` : exclut l'état Terraform et les paramètres locaux, qui ne doivent pas être partagés.
 
 Le fournisseur Terraform VirtualBox choisi est expérimental et ancien. Ces fichiers sont destinés à un laboratoire local, pas à un environnement de production.
+
+Dans l'état actuel du laboratoire, la VM existe mais l'état Terraform est marqué `tainted` après une erreur du fournisseur. Ne lancez pas `terraform apply` ou `terraform destroy` avant d'avoir sauvegardé les données Ubuntu et réconcilié l'état.
 
 ## Lancer le laboratoire
 
@@ -97,7 +172,7 @@ GRANT ALL PRIVILEGES ON taskmanager.* TO 'taskmanager_ci'@'127.0.0.1';
 
 Dans Jenkins, créez le credential **Username with password** `taskmanager-ci-db` avec cet utilisateur et ce mot de passe. Cette base locale est uniquement pour PHPUnit ; ne réutilisez pas la base d'Ubuntu.
 
-Avant d'activer le déploiement, créez aussi ces credentials Jenkins :
+Le pipeline déploie sur Ubuntu après les validations ; créez aussi ces credentials avant son premier build :
 
 - `taskmanager-ubuntu-ssh` : type **SSH Username with private key**, utilisateur `vagrant` et clé privée de la VM. La clé Vagrant fournie est publiquement connue et ne doit être utilisée que sur ce réseau de laboratoire.
 - `taskmanager-ubuntu-db-password` : type **Secret text**, mot de passe MySQL exact défini lors du premier déploiement Ansible. Il ne faut pas le confondre avec le credential de test PHPUnit.
