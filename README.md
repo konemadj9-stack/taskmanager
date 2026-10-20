@@ -4,7 +4,7 @@ Application PHP/MySQL utilisée pour apprendre Terraform, Ansible et Jenkins ave
 
 ## Fichiers d'infrastructure
 
-- `Jenkinsfile` : vérifie la syntaxe PHP, PHPStan, PHPUnit, Terraform et Ansible. Il ne crée ni ne modifie de VM.
+- `Jenkinsfile` : vérifie PHP/PHPStan/PHPUnit, Terraform et Ansible, puis déploie sur Ubuntu si toutes les validations réussissent. Il ne crée ni ne détruit de VM. Il interroge GitHub toutes les deux minutes environ pour détecter un push.
 - `terraform/main.tf` : déclare une VM Ubuntu Server avec un réseau NAT et un réseau privé VirtualBox.
 - `terraform/variables.tf` : définit et valide le nom, les ressources et l'interface privée de la VM.
 - `terraform/outputs.tf` : affiche l'adresse IP privée à reporter dans Ansible.
@@ -79,22 +79,31 @@ Le playbook demande ce mot de passe de base de données sans l'afficher. Une foi
 
 ### 4. Jenkins (facultatif)
 
-Le `Jenkinsfile` attend un agent Linux avec PHP 8.1+ et ses extensions, MySQL, curl, Terraform, Ansible et Git. Sur le serveur MySQL de l'agent, initialisez une base réservée aux tests :
+Le `Jenkinsfile` attend un agent Linux avec PHP 8.1+ et les extensions CLI usuelles, MariaDB/MySQL, curl, Terraform, Ansible et Git. Sur Kali, installez les dépendances et préparez une base réservée aux tests, distincte de celle d'Ubuntu :
 
 ```bash
-mysql -u root -p < database/schema.sql
+sudo apt install -y php-cli php-curl php-mbstring php-mysql php-xml mariadb-server
+sudo systemctl enable --now mariadb
+sudo mariadb < database/schema.sql
 ```
 
 Puis créez un utilisateur qui n'a accès qu'à cette base (remplacez le mot de passe) :
 
 ```sql
-CREATE USER 'taskmanager_ci'@'127.0.0.1' IDENTIFIED BY 'MOT_DE_PASSE';
+CREATE USER 'taskmanager_ci'@'127.0.0.1' IDENTIFIED BY 'MOT_DE_PASSE_HEXADECIMAL';
 GRANT ALL PRIVILEGES ON taskmanager.* TO 'taskmanager_ci'@'127.0.0.1';
 ```
 
-Ajoutez ensuite dans Jenkins un credential **Username with password** nommé `taskmanager-ci-db`, avec ce même utilisateur et mot de passe. Ne réutilisez pas la base de production.
+Dans Jenkins, créez le credential **Username with password** `taskmanager-ci-db` avec cet utilisateur et ce mot de passe. Cette base locale est uniquement pour PHPUnit ; ne réutilisez pas la base d'Ubuntu.
 
-Configurez le job en **Pipeline script from SCM**. À chaque build, Jenkins valide les fichiers et exécute les tests ; la création de la VM et le déploiement restent des commandes manuelles explicites. Ne lancez pas ce Jenkinsfile sur un agent Windows : ses étapes utilisent des commandes Linux.
+Avant d'activer le déploiement, créez aussi ces credentials Jenkins :
+
+- `taskmanager-ubuntu-ssh` : type **SSH Username with private key**, utilisateur `vagrant` et clé privée de la VM. La clé Vagrant fournie est publiquement connue et ne doit être utilisée que sur ce réseau de laboratoire.
+- `taskmanager-ubuntu-db-password` : type **Secret text**, mot de passe MySQL exact défini lors du premier déploiement Ansible. Il ne faut pas le confondre avec le credential de test PHPUnit.
+
+Le service Jenkins doit avoir les outils requis (`git`, `php`, `curl`, `terraform`, `ansible-playbook`, `ansible-galaxy`), pouvoir se connecter à MariaDB sur Kali et joindre Ubuntu sur `192.168.56.102` en SSH. Vérifiez l'empreinte SSH de l'hôte Ubuntu et ajoutez-la au `known_hosts` du compte système `jenkins` avant le premier build. Si l'adresse DHCP d'Ubuntu change, mettez à jour `TASKMANAGER_HOST` dans `Jenkinsfile`.
+
+Configurez le job en **Pipeline script from SCM**, avec l'URL GitHub, la branche à surveiller et `Jenkinsfile` comme chemin. Le pipeline interroge périodiquement le dépôt GitHub (environ toutes les deux minutes) ; il n'exige donc pas de rendre Jenkins accessible depuis Internet pour recevoir un webhook. Après un push détecté, il lance les validations et ne déploie sur Ubuntu par Ansible que si elles réussissent. Le déploiement n'appelle pas Terraform. Ne lancez pas ce Jenkinsfile sur un agent Windows : ses étapes utilisent des commandes Linux.
 
 Pour supprimer la VM de laboratoire, retournez dans `terraform/` et lancez `terraform destroy` ; cela supprime la VM et toutes les données qu'elle contient.
 

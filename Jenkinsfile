@@ -1,10 +1,15 @@
 pipeline {
     agent any
 
+    triggers {
+        pollSCM('H/2 * * * *')
+    }
+
     environment {
         TF_IN_AUTOMATION = 'true'
         DB_HOST = '127.0.0.1'
         DB_NAME = 'taskmanager'
+        TASKMANAGER_HOST = '192.168.56.102'
     }
 
     stages {
@@ -63,6 +68,35 @@ pipeline {
                     ansible-galaxy collection install -r ansible/requirements.yml
                     ansible-playbook --syntax-check -i ansible/inventory.ini ansible/site.yml
                 '''
+            }
+        }
+
+        stage('Deploy to Ubuntu') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'taskmanager-ubuntu-ssh',
+                        keyFileVariable: 'SSH_KEY'
+                    ),
+                    string(
+                        credentialsId: 'taskmanager-ubuntu-db-password',
+                        variable: 'TASKMANAGER_DB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        set +x
+                        extra_vars="$(mktemp)"
+                        trap 'rm -f "$extra_vars"' EXIT
+                        chmod 600 "$extra_vars"
+                        printf '{"ansible_host":"%s","taskmanager_db_password":"%s"}\\n' \
+                            "$TASKMANAGER_HOST" "$TASKMANAGER_DB_PASSWORD" > "$extra_vars"
+                        ansible-playbook \
+                            -i ansible/inventory.ini \
+                            ansible/site.yml \
+                            --private-key "$SSH_KEY" \
+                            --extra-vars "@$extra_vars"
+                    '''
+                }
             }
         }
     }

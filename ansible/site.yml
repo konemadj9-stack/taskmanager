@@ -1,6 +1,6 @@
 ---
 - name: Deploy TaskManager on the Ubuntu VM
-  hosts: taskmanager
+  hosts: web
   become: true
   gather_facts: true
   vars_prompt:

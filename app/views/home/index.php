@@ -9,7 +9,7 @@
     <main class="hero">
         <div class="hero-overlay">
             <h1>TaskManager</h1>
-            <p>Mini application PHP MVC pour apprendre Jenkins.</p>
+            <p>Gérez vos tâches simplement avec TaskManager.</p>
             <a class="btn" href="/taskmanager/public/index.php?controller=task&action=index">
                 Voir les tâches
             </a>

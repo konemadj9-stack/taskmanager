@@ -1,0 +1,665 @@
+=======================================================================
+                         GUIDE DE LABORATOIRE
+                 TASKMANAGER - TERRAFORM, ANSIBLE ET SSH
+=======================================================================
+
+Projet       : TaskManager - application PHP/MariaDB
+Objectif     : apprendre le provisionnement et la configuration
+               d'une VM locale avec Terraform, VirtualBox et Ansible
+Environnement: Windows (hôte) + Kali Linux (poste Ansible) +
+               Ubuntu Server (serveur TaskManager)
+Date         : octobre 2026
+Statut       : application déployée et testée (HTTP 200)
+
+IMPORTANT - ETAT TERRAFORM AU MOMENT DE LA REDACTION
+-----------------------------------------------------------------------
+La VM Ubuntu taskmanager-ubuntu existe et fonctionne. Toutefois, le
+fournisseur Terraform VirtualBox a échoué pendant la lecture des
+propriétés réseau de l'invité. Le fichier terraform.tfstate présent au
+moment de la rédaction contient cette VM avec l'état "tainted" (marqué
+pour remplacement) et aucune sortie IP calculée.
+
+NE PAS lancer terraform apply, terraform destroy, ni supprimer ou
+modifier les fichiers d'état à l'aveugle. Un prochain apply pourrait
+remplacer la VM et effacer ses données MariaDB. Faire d'abord une
+sauvegarde des données et décider comment réparer/réconcilier l'état
+Terraform. Le fournisseur terra-farm/virtualbox est expérimental et
+ancien ; son fonctionnement avec VirtualBox 7.2.20 est limité.
+
+
+SOMMAIRE
+-----------------------------------------------------------------------
+1. Introduction et résultat obtenu
+2. Architecture et réseau des trois machines
+3. Installation et outils présents par machine
+4. Fichiers du projet et leurs rôles
+5. Terraform : configuration, commandes et fichiers générés
+6. SSH : rôle et fonctionnement des clés sur Kali et Ubuntu
+7. Ansible : inventaire, playbook, rôle et déploiement
+8. MariaDB : accès et commandes SQL pratiques
+9. Contrôles effectués et erreurs rencontrées
+10. Sécurité et précautions
+11. Perspectives d'amélioration
+12. Conclusion
+
+
+1. INTRODUCTION ET RESULTAT OBTENU
+-----------------------------------------------------------------------
+TaskManager est une application PHP MVC utilisant MariaDB. Ce laboratoire
+fait tourner l'application dans une VM Ubuntu Server hébergée par
+VirtualBox sur Windows. Terraform décrit la VM ; Ansible installe les
+services, configure la base et copie l'application.
+
+Résultat vérifié :
+  - VM Ubuntu 22.04.5 LTS démarrée dans VirtualBox.
+  - Accès réseau entre Windows, Kali et Ubuntu.
+  - Ansible depuis Kali s'est connecté à Ubuntu par SSH.
+  - Apache, PHP et MariaDB ont été installés/configurés.
+  - Ansible a déployé l'application et initialisé la base.
+  - Depuis Kali, `curl -I http://192.168.56.102/taskmanager/public/`
+    a renvoyé `HTTP/1.1 200 OK`.
+
+Jenkins est installé sur Kali. Le pipeline est configuré pour interroger
+GitHub périodiquement, vérifier le code et déployer sur Ubuntu avec
+Ansible si toutes les validations réussissent. La configuration du job
+et des credentials Jenkins reste à terminer.
+
+
+2. ARCHITECTURE ET RESEAU DES TROIS MACHINES
+-----------------------------------------------------------------------
+
+Machine       Rôle                         Réseau / adresse observée
+------------- ---------------------------- --------------------------
+Windows       Hôte VirtualBox, Terraform   Host-only : 192.168.56.1
+Kali          Poste d'administration       NAT : 10.0.2.15
+                                           Host-only : 192.168.56.11
+Ubuntu        Serveur de l'application     Host-only : 192.168.56.102
+                                           NAT : 10.0.2.15
+
+Le réseau privé VirtualBox s'appelle :
+  VirtualBox Host-Only Ethernet Adapter
+
+Les informations de VirtualBox observées :
+  - Adresse hôte Host-only : 192.168.56.1
+  - Masque : 255.255.255.0 (/24)
+  - DHCP VirtualBox activé dans `VBoxManage list dhcpservers`
+  - Adresse serveur DHCP : 192.168.56.100
+  - Plage observée : 192.168.56.101 à 192.168.56.254
+  - Ubuntu a reçu 192.168.56.102 sur eth0 (Host-only).
+
+Kali a deux cartes :
+  - eth0 : NAT VirtualBox, adresse observée 10.0.2.15.
+  - eth1 : Host-only, adresse observée 192.168.56.11/24.
+
+La VM Ubuntu a deux cartes :
+  - eth0 : Host-only, utilisée pour SSH depuis Kali et HTTP vers le site.
+  - eth1 : NAT VirtualBox, utilisée par Ubuntu pour accéder à Internet.
+    Après création, eth1 était inactive au premier lancement Ansible.
+    Elle a été activée manuellement avec `ip link` et a reçu 10.0.2.15
+    par DHCP. L'accès APT a ensuite fonctionné.
+
+Host-only et NAT répondent à des besoins différents :
+  - Host-only fait communiquer les machines de l'hôte et les VM sur le
+    réseau privé VirtualBox ; ce n'est pas, à lui seul, une connexion
+    Internet.
+  - NAT donne à Ubuntu un accès sortant à Internet via Windows, sans
+    rendre directement la VM accessible depuis Internet.
+  - Le DHCP attribue automatiquement une adresse ; il ne remplace pas
+    SSH et ne donne pas de droit de connexion.
+
+Commandes de diagnostic sous Windows (PowerShell) :
+  & "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list hostonlyifs
+  & "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list dhcpservers
+  & "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" list vms
+
+Commandes de diagnostic dans Kali ou Ubuntu :
+  ip -br addr
+  ip route
+  ping -c 3 192.168.56.1
+  ping -c 3 192.168.56.102
+
+Les adresses 10.0.2.15 sont affectées indépendamment à Kali et à Ubuntu
+par leurs réseaux NAT VirtualBox respectifs ; elles ne désignent pas le
+même hôte. Pour SSH/Ansible et le site, utiliser l'adresse Host-only
+d'Ubuntu (192.168.56.102). L'adresse Host-only de Kali est
+192.168.56.11. Vérifier avec `ip -br addr` après redémarrage, car les
+adresses DHCP peuvent changer.
+
+
+3. INSTALLATION ET OUTILS PRESENTS PAR MACHINE
+-----------------------------------------------------------------------
+
+WINDOWS (hôte VirtualBox)
+  - Oracle VirtualBox 7.2.20.
+  - Terraform v1.16.6 pour Windows AMD64.
+  - VBoxManage se trouve ici :
+      C:\Program Files\Oracle\VirtualBox\VBoxManage.exe
+  - Le dossier VirtualBox n'était pas initialement dans le PATH.
+    Correction temporaire pour la fenêtre PowerShell courante :
+      $env:Path = "C:\Program Files\Oracle\VirtualBox;$env:Path"
+      VBoxManage --version
+    Ce changement temporaire est perdu à la fermeture de cette fenêtre.
+  - PowerShell et le dépôt GitHub du projet.
+
+KALI (poste d'administration)
+  - Ansible était déjà installé avant le déploiement.
+  - Le dépôt du projet est présent sous ~/Documents/taskmanager.
+  - Commande de préparation proposée pour les outils complémentaires
+    (leur exécution n'a pas été confirmée dans le terminal partagé) :
+      sudo apt update
+      sudo apt install -y ansible git python3-pymysql
+  - Collection Ansible installée :
+      ansible-galaxy collection install -r ansible/requirements.yml
+    La version effectivement installée et affichée était
+    community.mysql 4.3.0.
+  - Jenkins 2.580.1 est installé et actif, écoute sur TCP 8080 et est
+    accessible depuis Windows via http://192.168.56.11:8080.
+  - Jenkins tourne sous le compte système jenkins. Terraform 1.16.6 a
+    été installé dans /usr/local/bin/terraform et testé sous ce compte.
+  - Clé privée SSH du laboratoire stockée dans ~/.ssh, voir section 6.
+
+UBUNTU (serveur cible)
+  - Image Bento Ubuntu 22.04.5 LTS, noyau observé 5.15.0-160-generic.
+  - VM : taskmanager-ubuntu, 2 vCPU, 2048 MiB de mémoire.
+  - Ansible a installé : Apache2, PHP, libapache2-mod-php,
+    MariaDB Server et python3-pymysql.
+  - Version MariaDB observée : 10.6.23.
+  - La VM a une carte NAT et une carte Host-only.
+
+Les commandes `apt` doivent être exécutées dans la machine concernée.
+Les outils de ligne de commande ne sont pas installés dans un dossier
+du dépôt ; ils appartiennent au système d'exploitation.
+
+
+4. FICHIERS DU PROJET ET LEURS ROLES
+-----------------------------------------------------------------------
+
+Racine du projet
+  README.md
+    Instructions courtes pour le laboratoire et le projet.
+  Jenkinsfile
+    Interroge GitHub périodiquement, exécute les validations et déploie
+    avec Ansible sur Ubuntu si elles réussissent. Ne gère pas le cycle
+    de vie de la VM Terraform.
+  .gitignore
+    Ignore les états Terraform, paramètres locaux et PHAR de tests.
+  make.ps1
+    Script Jenkins/local préexistant du projet ; indépendant de la
+    procédure Terraform/Ansible de ce guide.
+
+Terraform/
+  terraform/main.tf
+    Déclare le fournisseur VirtualBox et la VM Ubuntu à créer.
+  terraform/variables.tf
+    Définit vm_name, vm_cpus, vm_memory_mib et hostonly_interface.
+    Les limites de vCPU et de mémoire sont vérifiées ici.
+  terraform/outputs.tf
+    Demande l'adresse IPv4 de la deuxième carte, Host-only.
+  terraform/terraform.tfvars.example
+    Exemple non secret à copier en terraform.tfvars.
+  terraform/terraform.tfvars
+    Configuration locale, ignorée par Git ; contient le nom exact
+    de l'interface Host-only.
+  terraform/.terraform.lock.hcl
+    Verrouille la version du fournisseur sélectionnée par init.
+  terraform/.terraform/
+    Fournisseur téléchargé par terraform init ; répertoire généré.
+  terraform/terraform.tfstate
+    État local de Terraform. Ne pas supprimer ou publier.
+  terraform/terraform.tfstate.backup
+    Sauvegarde précédente d'état Terraform. Ne pas publier.
+  terraform/vagrant.box
+    Image téléchargée par le fournisseur ; fichier généré volumineux.
+
+Ansible/
+  ansible/inventory.ini
+    Inventaire des serveurs administrés. Le groupe s'appelle web ;
+    l'adresse Host-only effective est aussi passée au playbook par
+    Jenkins avec TASKMANAGER_HOST.
+  ansible/site.yml
+    Playbook principal ; demande le mot de passe SQL pour une exécution
+    manuelle, puis applique le rôle taskmanager. Jenkins lui fournit le
+    secret de manière non interactive via un fichier temporaire protégé.
+  ansible/requirements.yml
+    Dépendance à la collection community.mysql.
+  ansible/roles/taskmanager/defaults/main.yml
+    Valeurs par défaut non secrètes (chemin web, nom DB, utilisateur).
+  ansible/roles/taskmanager/tasks/main.yml
+    Installe les paquets, crée la DB/utilisateur, importe le schéma,
+    copie le code et configure Apache.
+  ansible/roles/taskmanager/handlers/main.yml
+    Redémarre Apache lorsque sa configuration est modifiée.
+  ansible/roles/taskmanager/templates/apache-env.conf.j2
+    Fournit les variables d'environnement DB à PHP via Apache.
+
+Application
+  database/schema.sql
+    Crée la base taskmanager et la table tasks.
+  config/database.php
+    Lit DB_HOST, DB_NAME, DB_USER et DB_PASSWORD dans l'environnement.
+    En local XAMPP, garde des valeurs de repli pour compatibilité.
+  app/, public/
+    Code PHP MVC, point d'entrée Web et ressources.
+  tests/
+    Tests PHPUnit.
+
+
+5. TERRAFORM : CONFIGURATION, COMMANDES ET FICHIERS GENERES
+-----------------------------------------------------------------------
+
+Extrait essentiel de terraform/main.tf :
+
+  terraform {
+    required_version = ">= 1.5.0"
+    required_providers {
+      virtualbox = {
+        source  = "terra-farm/virtualbox"
+        version = "0.2.2-alpha.1"
+      }
+    }
+  }
+
+  resource "virtualbox_vm" "taskmanager" {
+    name   = var.vm_name
+    image  = "https://vagrantcloud.com/bento/boxes/ubuntu-22.04/versions/202510.26.0/providers/virtualbox/amd64/vagrant.box"
+    cpus   = var.vm_cpus
+    memory = "${var.vm_memory_mib} mib"
+    network_adapter { type = "nat" }
+    network_adapter {
+      type           = "hostonly"
+      host_interface = var.hostonly_interface
+    }
+  }
+
+Configuration locale attendue dans terraform/terraform.tfvars :
+  hostonly_interface = "VirtualBox Host-Only Ethernet Adapter"
+
+Paramètres par défaut :
+  vm_name       = taskmanager-ubuntu
+  vm_cpus       = 2
+  vm_memory_mib = 2048
+
+Procédure normale depuis PowerShell sur Windows :
+
+  Set-Location C:\Users\Ali.KONE\Downloads\test\taskmanager
+  Copy-Item terraform\terraform.tfvars.example terraform\terraform.tfvars
+  notepad terraform\terraform.tfvars
+  Set-Location terraform
+  terraform init
+  terraform fmt -check
+  terraform validate
+  terraform plan
+  terraform apply
+
+Avant de confirmer `terraform apply`, vérifier le plan : il doit annoncer
+les changements attendus. Pour afficher la sortie après un apply réussi :
+  terraform output -raw taskmanager_ip
+
+But des principales commandes :
+  init       Télécharge le fournisseur et crée le verrou de dépendances.
+  fmt        Vérifie le format HCL.
+  validate   Vérifie la syntaxe et la cohérence de configuration.
+  plan       Prévisualise les changements sans les appliquer.
+  apply      Crée/modifie les ressources après confirmation.
+  output     Affiche une sortie calculée par Terraform.
+  destroy    Supprime les ressources gérées ; action destructive.
+
+Fichiers générés :
+  .terraform/                 fournisseur téléchargé (non versionné)
+  .terraform.lock.hcl         verrou de version (à versionner normalement)
+  terraform.tfstate           inventaire local réel des ressources
+  terraform.tfstate.backup    état précédent
+  terraform.tfvars            paramètres locaux non versionnés
+  vagrant.box                 image téléchargée par le fournisseur
+
+Incident effectivement rencontré :
+  1. Première erreur : VBoxManage introuvable dans PATH. Le chemin
+     VirtualBox a été ajouté temporairement au PATH PowerShell.
+  2. Ensuite, Terraform a créé la VM puis le fournisseur a échoué en
+     lisant ses informations réseau :
+       No match with get guestproperty output
+  3. La VM a bien démarré et reçu l'adresse Host-only 192.168.56.102.
+  4. L'état Terraform actuel contient l'ID de VM
+     22a003ab-b0d4-4f56-82ff-12164eff6e83 et le statut "tainted".
+     L'output taskmanager_ip n'a pas été produit.
+  5. Ce fournisseur attend des propriétés d'adresse IP invitées qui
+     n'ont pas été exposées comme il l'attendait ; la VM, elle, tournait.
+
+ATTENTION : état tainted = Terraform peut vouloir remplacer la VM au
+prochain apply. Sauvegarder d'abord la base et réconcilier l'état ; ne
+pas utiliser apply/destroy par réflexe. Ne jamais supprimer le state
+pour "réparer" Terraform sans comprendre les conséquences.
+
+
+6. SSH : ROLE ET FONCTIONNEMENT DES CLES SUR KALI ET UBUNTU
+-----------------------------------------------------------------------
+
+Le réseau permet d'atteindre une machine ; SSH vérifie l'identité et les
+droits de l'utilisateur. Un ping qui répond ne prouve pas qu'un accès
+SSH est autorisé.
+
+Trois éléments SSH à distinguer :
+
+  A. Clé privée du client Kali
+     Fichier utilisé pour prouver l'identité de l'utilisateur vagrant :
+       ~/.ssh/vagrant_insecure_private_key
+     Elle doit rester privée et avoir les permissions 600.
+
+  B. Clé publique autorisée sur Ubuntu
+     La clé publique correspondante est déjà présente dans le compte
+     vagrant de cette image de laboratoire. Le serveur compare la clé
+     présentée par Kali aux clés autorisées du compte.
+
+  C. Clé d'hôte SSH d'Ubuntu
+     Créée par le serveur SSH pour identifier Ubuntu auprès des clients.
+     Kali l'a enregistrée dans ~/.ssh/known_hosts après confirmation
+     initiale. Elle est différente de la clé privée utilisateur.
+
+La clé Vagrant récupérée est volontairement publique et non sécurisée.
+Elle ne protège pas une machine : n'utiliser que pour le laboratoire,
+ne jamais la réutiliser sur une machine personnelle/production, et ne
+jamais la committer dans Git.
+
+Commandes exécutées dans Kali (depuis n'importe quel dossier) :
+  mkdir -p ~/.ssh
+  curl -fsSL https://raw.githubusercontent.com/hashicorp/vagrant/main/keys/vagrant -o ~/.ssh/vagrant_insecure_private_key
+  chmod 600 ~/.ssh/vagrant_insecure_private_key
+
+La clé est enregistrée dans /home/<utilisateur-kali>/.ssh/ ; le dossier
+courant du terminal n'a pas d'importance.
+
+Connexion manuelle :
+  ssh -i ~/.ssh/vagrant_insecure_private_key vagrant@192.168.56.102
+
+La première connexion demande de confirmer l'empreinte du serveur.
+Ne confirmer que si l'on sait qu'il s'agit bien de la VM Ubuntu attendue.
+Fermer la session distante :
+  exit
+
+Pour créer une vraie clé personnelle (amélioration future, ne remplace
+pas automatiquement la clé de ce laboratoire) :
+  ssh-keygen -t ed25519 -f ~/.ssh/taskmanager_ed25519
+Puis installer la clé publique sur un serveur contrôlé :
+  ssh-copy-id -i ~/.ssh/taskmanager_ed25519.pub utilisateur@IP
+La clé privée taskmanager_ed25519 ne doit jamais être copiée sur Ubuntu
+ni partagée. Une nouvelle clé ne fonctionnera qu'après autorisation de
+sa clé publique sur le serveur.
+
+
+7. ANSIBLE : INVENTAIRE, PLAYBOOK, ROLE ET DEPLOIEMENT
+-----------------------------------------------------------------------
+
+Ansible est installé et lancé depuis Kali. Ubuntu est la machine cible.
+Ansible utilise SSH, l'utilisateur vagrant et sudo (become: true).
+
+Inventaire (exemple à garder à jour) :
+  [web]
+  taskmanager ansible_host=192.168.56.102 ansible_user=vagrant ansible_ssh_private_key_file=~/.ssh/vagrant_insecure_private_key
+
+  [web:vars]
+  ansible_python_interpreter=/usr/bin/python3
+
+L'inventaire fourni dans le dépôt conserve l'adresse de secours
+192.168.56.101 et le chemin de clé utilisé lors des essais manuels.
+Pour les builds Jenkins, TASKMANAGER_HOST et le credential SSH
+remplacent ces valeurs sans modifier le fichier suivi par Git.
+
+Installation/dépendances dans Kali :
+  sudo apt update
+  sudo apt install -y ansible git python3-pymysql
+  ansible-galaxy collection install -r ansible/requirements.yml
+
+Test de connexion (exécuté avec succès) :
+  ansible -i ansible/inventory.ini web -m ping
+Résultat obtenu : SUCCESS, "ping": "pong".
+
+Déploiement (exécuté avec succès) :
+  ansible-playbook -i ansible/inventory.ini ansible/site.yml
+
+Le playbook demande deux fois taskmanager_db_password sans afficher
+la saisie. Il faut entrer le même secret, hexadécimal d'au moins 32
+caractères. Pour en générer un :
+  openssl rand -hex 24
+Garder le secret dans un gestionnaire sûr ; ne pas le mettre dans Git ou
+dans ce document.
+
+Actions du rôle taskmanager :
+  1. Valide le format du mot de passe.
+  2. Installe Apache, PHP, MariaDB et le pilote Python MariaDB.
+  3. Active et démarre MariaDB.
+  4. Crée la base taskmanager.
+  5. Copie puis importe database/schema.sql.
+  6. Crée l'utilisateur SQL restreint taskmanager.
+  7. Copie app/, config/, database/ et public/ sous
+     /var/www/html/taskmanager/.
+  8. Configure les variables DB pour Apache et redémarre Apache.
+
+Problème APT résolu :
+  Au premier lancement, eth1 (NAT) était inactive. Dans Ubuntu :
+    sudo ip link set eth1 up
+    sudo dhclient -v eth1
+  Ubuntu a reçu 10.0.2.15 avec route par défaut 10.0.2.2 ; `apt-get
+  update` a alors fonctionné. Cette activation manuelle peut ne pas
+  persister après redémarrage. À améliorer en configurant le réseau
+  Ubuntu de façon persistante.
+
+Le playbook s'est terminé avec :
+  ok=15 changed=11 unreachable=0 failed=0
+
+Avertissements observés, sans échec du déploiement :
+  - groupe et hôte tous deux nommés taskmanager dans inventory.ini ;
+    renommer par exemple le groupe [web] et adapter hosts: web.
+  - modules community.mysql.mysql_db/mysql_user dépréciés dans la
+    version de collection utilisée ; suivre la documentation de la
+    collection et migrer vers les noms de modules actuels.
+
+Test HTTP effectué depuis Kali :
+  curl -I http://192.168.56.102/taskmanager/public/
+Résultat : HTTP/1.1 200 OK, Apache/2.4.52 (Ubuntu).
+URL navigateur :
+  http://192.168.56.102/taskmanager/public/
+
+
+8. MARIADB : ACCES ET COMMANDES SQL PRATIQUES
+-----------------------------------------------------------------------
+
+La base de production/laboratoire se trouve sur Ubuntu. Connexion
+administrateur depuis la console Ubuntu :
+  sudo mariadb taskmanager
+
+Commandes SQL utiles (à saisir dans l'invite MariaDB, avec ; final) :
+  SHOW TABLES;
+  DESCRIBE tasks;
+  SELECT * FROM tasks;
+
+Insérer une tâche :
+  INSERT INTO tasks (title, description, status)
+  VALUES ('Tester MariaDB', 'Ajout depuis la console', 'todo');
+
+Vérifier :
+  SELECT * FROM tasks;
+
+Quitter le client :
+  exit
+
+Cette méthode utilise le compte système root via le socket local et ne
+nécessite pas de rendre MariaDB accessible depuis le réseau.
+
+Une connexion depuis Kali peut se faire plus tard par tunnel SSH, sans
+exposer directement le port MariaDB 3306 :
+
+Terminal Kali 1 (laisser ouvert) :
+  ssh -N -L 3307:127.0.0.1:3306 -i ~/.ssh/vagrant_insecure_private_key vagrant@192.168.56.102
+
+Terminal Kali 2 :
+  sudo apt install -y mariadb-client
+  mariadb -h 127.0.0.1 -P 3307 -u taskmanager -p taskmanager
+
+Saisir le mot de passe taskmanager choisi pour le playbook. Fermer le
+tunnel avec Ctrl+C dans le premier terminal.
+
+
+9. CONTROLES EFFECTUES ET ERREURS RENCONTREES
+-----------------------------------------------------------------------
+
+Terraform :
+  - terraform init a téléchargé terra-farm/virtualbox v0.2.2-alpha.1.
+  - terraform validate a répondu Success.
+  - terraform plan a annoncé 1 création, 0 modification, 0 suppression.
+  - Premier apply : VBoxManage non trouvé dans PATH ; corrigé dans la
+    session PowerShell en ajoutant le répertoire VirtualBox au PATH.
+  - Apply suivant : VM créée, puis erreur de lecture des propriétés
+    réseau invitées. La VM est néanmoins restée démarrée.
+  - L'état Terraform actuel est tainted. Voir l'avis au début.
+
+Réseau :
+  - Kali, Windows et Ubuntu se pinguent mutuellement.
+  - Ubuntu Host-only eth0 : 192.168.56.102/24.
+  - Ubuntu NAT eth1 : 10.0.2.15/24 après dhclient.
+  - APT a réussi une fois la carte NAT activée.
+
+Ansible :
+  - collection community.mysql installée.
+  - test Ansible ping réussi.
+  - premier playbook échoué car Ubuntu ne pouvait pas joindre APT
+    (NAT inactive).
+  - après activation de eth1 et apt-get update, playbook réussi.
+
+Application :
+  - curl a retourné HTTP 200.
+  - connexion MariaDB locale `sudo mariadb taskmanager` réussie.
+
+Jenkins :
+  - Jenkins est actif sous Kali et affiche son tableau de bord depuis
+    Windows à http://192.168.56.11:8080.
+  - Jenkins écoute sur *:8080. Ne pas publier/forwarder ce port sur
+    Internet.
+  - `curl -I http://127.0.0.1:8080` a renvoyé HTTP 403 en anonyme ;
+    c'est normal sans authentification, pas une panne du service.
+  - Outils vérifiés sous `jenkins` :
+      git               /usr/bin/git
+      php               /usr/bin/php
+      curl              /usr/bin/curl
+      terraform         /usr/local/bin/terraform
+      ansible-playbook  /usr/bin/ansible-playbook
+      ansible-galaxy    /usr/bin/ansible-galaxy
+  - La collection community.mysql 4.3.0 est présente pour l'utilisateur
+    Kali ; le job Jenkins installe ses propres collections sous le compte
+    jenkins lors du build.
+
+Configuration Jenkins à terminer :
+  1. Préparer sur Kali une base taskmanager réservée aux tests PHPUnit,
+     distincte de la base taskmanager sur Ubuntu :
+       sudo apt install -y php-cli php-curl php-mbstring php-mysql php-xml mariadb-server
+       sudo systemctl enable --now mariadb
+       sudo mariadb < database/schema.sql
+     Dans `sudo mariadb`, créer un utilisateur local avec des droits
+     limités à cette seule base :
+       CREATE USER 'taskmanager_ci'@'127.0.0.1'
+         IDENTIFIED BY 'MOT_DE_PASSE_HEXADECIMAL';
+       GRANT ALL PRIVILEGES ON taskmanager.*
+         TO 'taskmanager_ci'@'127.0.0.1';
+       FLUSH PRIVILEGES;
+  2. Dans Jenkins > Manage Jenkins > Credentials, créer :
+       taskmanager-ci-db
+         Username with password : taskmanager_ci + mot de passe de test.
+       taskmanager-ubuntu-ssh
+         SSH Username with private key : username vagrant + clé privée
+         de laboratoire. La clé Vagrant est publiquement connue, labo
+         seulement.
+       taskmanager-ubuntu-db-password
+         Secret text : mot de passe SQL exact saisi au premier playbook.
+     Ne pas mettre ces valeurs dans le dépôt Git.
+  3. Le compte jenkins doit accéder à la base MariaDB locale et pouvoir
+     joindre Ubuntu sur le réseau Host-only 192.168.56.102.
+  4. Vérifier l'empreinte ED25519 d'Ubuntu depuis sa console :
+       sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+     Puis depuis Kali :
+       ssh-keyscan -t ed25519 192.168.56.102 > /tmp/taskmanager-hostkey
+       ssh-keygen -lf /tmp/taskmanager-hostkey
+     Comparer les empreintes. Si elles correspondent, ajouter l'entrée
+     au known_hosts du compte Jenkins :
+       sudo install -d -o jenkins -g jenkins -m 700 /var/lib/jenkins/.ssh
+       sudo sh -c 'ssh-keyscan -H -t ed25519 192.168.56.102 >> /var/lib/jenkins/.ssh/known_hosts'
+       sudo chown jenkins:jenkins /var/lib/jenkins/.ssh/known_hosts
+       sudo chmod 600 /var/lib/jenkins/.ssh/known_hosts
+  5. Dans Jenkins, créer un item Pipeline avec Pipeline script from SCM,
+     Git, URL du dépôt, branche voulue, Script Path `Jenkinsfile`.
+     Lancer d'abord un build manuel. `pollSCM('H/2 * * * *')` interroge
+     GitHub environ toutes les deux minutes et déclenche les builds des
+     nouveaux commits détectés ; aucun webhook public n'est nécessaire.
+
+Le Jenkinsfile exécute PHP syntax, PHPStan, PHPUnit, Terraform fmt/init/
+validate et la syntaxe Ansible. Ensuite, il injecte le secret de base
+Ubuntu dans un fichier temporaire à permissions 600, lance le playbook
+et supprime ce fichier à la fin. La clé SSH et les mots de passe sont
+obtenus depuis les credentials Jenkins. Il ne lance pas `terraform
+apply` ni `terraform destroy`. TASKMANAGER_HOST vaut actuellement
+192.168.56.102 ; mettre cette variable à jour si DHCP modifie l'adresse.
+
+
+10. SECURITE ET PRECAUTIONS
+-----------------------------------------------------------------------
+
+  - La clé privée Vagrant est connue publiquement : laboratoire isolé
+    seulement. Ne pas l'utiliser hors de cette VM.
+  - Ne jamais committer clé privée, mot de passe SQL, terraform.tfstate
+    ou terraform.tfvars.
+  - terraform.tfstate peut contenir des informations sensibles et
+    décrit les ressources gérées. Le sauvegarder et le protéger.
+  - Ne pas ouvrir le port 3306 au réseau ; préférer sudo mariadb local
+    ou le tunnel SSH.
+  - Changer les identifiants et clés de la VM avant toute utilisation
+    réelle ou exposition hors du réseau de laboratoire.
+  - Avant une commande Terraform destructive, lire le plan et faire une
+    sauvegarde de la base.
+  - Le fournisseur VirtualBox est expérimental ; ce laboratoire n'est
+    pas une architecture de production.
+
+
+11. PERSPECTIVES D'AMELIORATION
+-----------------------------------------------------------------------
+
+  1. Réparer la relation Terraform/VM marquée tainted sans perdre les
+     données, puis choisir un fournisseur VirtualBox maintenu ou une
+     approche plus stable. Vérifier support et compatibilité avant
+     migration.
+  2. Persister la configuration réseau Ubuntu afin que eth1/NAT se
+     réactive automatiquement au redémarrage.
+  3. Rendre l'adresse de la VM stable (DHCP avec réservation ou adresse
+     statique adaptée au réseau Host-only), puis gérer l'inventaire sans
+     adresse codée en dur.
+  4. Séparer noms de groupe et d'hôte Ansible et corriger les modules
+     community.mysql dépréciés.
+  5. Remplacer la clé Vagrant publique par une clé Ed25519 personnelle ;
+     stocker les secrets Ansible dans Ansible Vault ou un gestionnaire
+     de secrets.
+  6. Protéger les secrets Apache et l'accès MariaDB, et contrôler les
+     permissions de la configuration générée.
+  7. Terminer le job Jenkins et préparer les trois credentials indiqués
+     dans la section 9 ; remplacer la clé Vagrant dès que possible.
+  8. Ajouter une sauvegarde/restauration MariaDB et une procédure de
+     retour arrière du déploiement.
+  9. Versionner terraform/.terraform.lock.hcl, mais jamais state,
+     tfvars, clé privée ou secret.
+ 10. Envisager un DNS local plutôt que de dépendre directement d'une IP.
+
+
+12. CONCLUSION
+-----------------------------------------------------------------------
+
+Le laboratoire a permis de créer une VM Ubuntu VirtualBox, de la rendre
+accessible depuis Kali par SSH, de configurer son réseau NAT/Host-only,
+puis de déployer TaskManager avec Ansible. La réponse HTTP 200 et l'accès
+MariaDB confirment que l'application fonctionne.
+
+La principale limite restante est la gestion Terraform : le fournisseur
+a créé la VM mais a échoué en lisant les propriétés réseau de l'invité,
+et l'état local marque actuellement la ressource "tainted". La priorité
+est donc de sécuriser les données puis de corriger cette incohérence
+avant toute nouvelle commande Terraform susceptible de remplacer ou
+supprimer la VM.
+
+=======================================================================
+FIN DU GUIDE
+=======================================================================
