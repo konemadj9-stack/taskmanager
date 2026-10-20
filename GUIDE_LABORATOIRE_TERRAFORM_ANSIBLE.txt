@@ -394,15 +394,18 @@ Ansible utilise SSH, l'utilisateur vagrant et sudo (become: true).
 
 Inventaire (exemple à garder à jour) :
   [web]
-  taskmanager ansible_host=192.168.56.102 ansible_user=vagrant ansible_ssh_private_key_file=~/.ssh/vagrant_insecure_private_key
+  taskmanager ansible_host=192.168.56.102 ansible_user=vagrant
 
   [web:vars]
   ansible_python_interpreter=/usr/bin/python3
 
 L'inventaire fourni dans le dépôt conserve l'adresse de secours
-192.168.56.101 et le chemin de clé utilisé lors des essais manuels.
-Pour les builds Jenkins, TASKMANAGER_HOST et le credential SSH
-remplacent ces valeurs sans modifier le fichier suivi par Git.
+192.168.56.101 et ne fixe pas de chemin de clé SSH. Cela permet à
+Jenkins de fournir le chemin temporaire de la clé à partir du credential.
+Pour les exécutions manuelles depuis Kali, indiquer la clé explicitement
+avec `--private-key ~/.ssh/vagrant_insecure_private_key`.
+Pour Jenkins, TASKMANAGER_HOST remplace l'adresse d'exemple et le
+credential SSH fournit la clé privée.
 
 Installation/dépendances dans Kali :
   sudo apt update
@@ -410,11 +413,11 @@ Installation/dépendances dans Kali :
   ansible-galaxy collection install -r ansible/requirements.yml
 
 Test de connexion (exécuté avec succès) :
-  ansible -i ansible/inventory.ini web -m ping
+  ansible -i ansible/inventory.ini web -m ping --private-key ~/.ssh/vagrant_insecure_private_key
 Résultat obtenu : SUCCESS, "ping": "pong".
 
 Déploiement (exécuté avec succès) :
-  ansible-playbook -i ansible/inventory.ini ansible/site.yml
+  ansible-playbook -i ansible/inventory.ini ansible/site.yml --private-key ~/.ssh/vagrant_insecure_private_key
 
 Le playbook demande deux fois taskmanager_db_password sans afficher
 la saisie. Il faut entrer le même secret, hexadécimal d'au moins 32
@@ -528,6 +531,19 @@ Ansible :
 Application :
   - curl a retourné HTTP 200.
   - connexion MariaDB locale `sudo mariadb taskmanager` réussie.
+
+Erreur du premier déploiement Jenkins :
+  - Les validations PHP, PHPStan, PHPUnit, Terraform et syntaxe Ansible
+    ont toutes réussi.
+  - Le déploiement échouait car l'inventaire imposait
+    /var/lib/jenkins/.ssh/vagrant_insecure_private_key, fichier absent.
+  - Le Jenkinsfile fournit déjà la clé Jenkins par --private-key. Une
+    valeur ansible_ssh_private_key_file dans l'inventaire avait priorité
+    et contredisait cette option.
+  - Correction : enlever ansible_ssh_private_key_file de inventory.ini.
+    Jenkins doit lire la nouvelle version depuis Git avant de relancer.
+  - Les avertissements community.mysql sont des dépréciations, pas la
+    cause de l'échec SSH.
 
 Jenkins :
   - Jenkins est actif sous Kali et affiche son tableau de bord depuis

@@ -59,7 +59,7 @@ sudo apt install -y ansible git python3-pymysql
 ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
-Récupérez le dépôt dans Kali. Dans `ansible/inventory.ini`, remplacez l'adresse d'exemple par l'adresse retournée par Terraform. Le fichier utilise la clé SSH de laboratoire Vagrant. Sur Kali, récupérez-la et protégez-la ainsi :
+Récupérez le dépôt dans Kali. Dans `ansible/inventory.ini`, remplacez l'adresse d'exemple par l'adresse retournée par Terraform. Le fichier ne fixe pas le chemin de la clé SSH, afin de permettre à Jenkins d'utiliser son credential privé. Pour lancer Ansible manuellement, indiquez la clé sur la commande. Sur Kali, récupérez-la et protégez-la ainsi :
 
 ```bash
 mkdir -p ~/.ssh
@@ -72,7 +72,8 @@ Cette clé privée Vagrant est connue publiquement : elle est **uniquement pour 
 Générez un mot de passe dédié (par exemple `openssl rand -hex 24`), puis depuis la racine du dépôt, lancez :
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/site.yml
+ansible-playbook -i ansible/inventory.ini ansible/site.yml \
+  --private-key ~/.ssh/vagrant_insecure_private_key
 ```
 
 Le playbook demande ce mot de passe de base de données sans l'afficher. Une fois terminé, ouvrez `http://<adresse-IP>/taskmanager/public/`.
